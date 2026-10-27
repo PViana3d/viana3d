@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="pt-PT">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Gestão Impressão 3D</title>
+<meta name="description" content="Orçamentos, encomendas, produção, bobines e manutenção para uma oficina de impressão 3D.">
+<meta name="theme-color" content="#1B2421">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Impressão 3D">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="styles.css?v=__BUILD__">
+</head>
+<body>
+<div id="auth" hidden></div>
+<div class="app" id="app">
+  <aside class="side">
+    <div class="brand"><b id="brandName">Oficina 3D</b><small>Gestão de impressão</small></div>
+    <nav class="nav" id="nav"></nav>
+    <div class="side-foot" id="storeNote"></div>
+  </aside>
+  <main><div class="wrap" id="view"><div class="loading">A carregar dados…</div></div></main>
+</div>
+<dialog id="dlg"></dialog>
+<div class="toast" id="toast" hidden></div>
+
+<script src="vendor/supabase.js?v=__BUILD__"></script>
+<script src="vendor/jszip.min.js?v=__BUILD__"></script>
+<script src="config.js?v=__BUILD__"></script>
+<script src="app.js?v=__BUILD__"></script>
+<script>
+// instalação como app e atualizações automáticas
+if ('serviceWorker' in navigator && location.protocol === 'https:') {
+  navigator.serviceWorker.register('sw.js').then(reg => {
+    reg.addEventListener('updatefound', () => {
+      const nw = reg.installing;
+      nw && nw.addEventListener('statechange', () => {
+        if (nw.state === 'installed' && navigator.serviceWorker.controller) {
+          const bar = document.createElement('div');
+          bar.className = 'update-bar';
+          bar.innerHTML = '<span>Há uma nova versão da aplicação.</span><button class="btn primary" type="button">Atualizar</button>';
+          bar.querySelector('button').onclick = () => { nw.postMessage('skip'); };
+          document.body.appendChild(bar);
+        }
+      });
+    });
+  }).catch(() => {});
+  let reloaded = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => { if (!reloaded) { reloaded = true; location.reload(); } });
+}
+</script>
+</body>
+</html>

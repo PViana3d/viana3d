@@ -1,0 +1,15 @@
+{
+  "name": "gestao-impressao-3d",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Gestão de um pequeno negócio de impressão 3D: orçamentos, encomendas, produção, bobines e manutenção.",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "start": "node scripts/build.mjs && npx --yes serve dist -l 5173"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "2.45.4",
+    "jspdf": "2.5.1",
+    "jszip": "3.10.1"
+  }
+}
