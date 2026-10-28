@@ -8,8 +8,8 @@
     "start": "node scripts/build.mjs && npx --yes serve dist -l 5173"
   },
   "dependencies": {
+    "@supabase/supabase-js": "2.45.4",
     "jspdf": "2.5.1",
-    "jszip": "3.10.1",
-    "pocketbase": "0.28.1"
+    "jszip": "3.10.1"
   }
 }

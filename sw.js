@@ -1,12 +1,12 @@
 // Service worker: guarda a aplicação no aparelho para abrir depressa e sem internet.
-// Os dados vêm sempre do servidor (/api/), nunca da cache.
+// Os dados vêm sempre do Supabase (não passam por aqui).
 const VERSION = '__BUILD__';
 const CACHE = 'g3d-app-' + VERSION;
 const FONTS = 'g3d-fonts';
 const ASSETS = [
   './', 'index.html', 'manifest.webmanifest',
   'styles.css?v=' + VERSION, 'app.js?v=' + VERSION, 'config.js?v=' + VERSION,
-  'vendor/pocketbase.umd.js?v=' + VERSION, 'vendor/jszip.min.js?v=' + VERSION, 'vendor/jspdf.umd.min.js',
+  'vendor/supabase.js?v=' + VERSION, 'vendor/jszip.min.js?v=' + VERSION, 'vendor/jspdf.umd.min.js',
   'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png'
 ];
 
@@ -36,8 +36,7 @@ self.addEventListener('fetch', e => {
     }));
     return;
   }
-  if (url.origin !== location.origin) return;
-  if (url.pathname.startsWith('/api/') || url.pathname.startsWith('/_/')) return; // dados e painel do servidor: sempre pela rede
+  if (url.origin !== location.origin) return; // Supabase e outros: sempre pela rede
   // página: rede primeiro (para receber atualizações), cache se estiver sem internet
   if (req.mode === 'navigate') {
     e.respondWith(fetch(req).catch(() => caches.match('index.html')));

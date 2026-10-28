@@ -25,18 +25,14 @@ const DEFAULT_TASKS = [['Limpeza da base e bico', 50], ['Lubrificação dos eixo
 
 let loaded = false, writeBlocked = false;
 
-/* ---------- armazenamento (PocketBase no Raspberry Pi) ---------- */
-// Todos os registos ficam na coleção "docs" (coll + ref + dados JSON). A equipa partilha os mesmos dados.
+/* ---------- armazenamento (Supabase) ---------- */
+// Todos os registos ficam numa tabela "docs" (workspace, coleção, id, dados JSON).
+// Cada empresa é um "workspace"; os membros da equipa veem e alteram os mesmos dados.
 const CFG = window.APP_CONFIG || {};
-let pb = null, ME = null, ROLE = 'membro', online = navigator.onLine, subscribed = false;
-const known = new Set();                          // ids dos registos que já existem no servidor
-const CACHE_KEY = 'g3d-cache-pb';
-function saveCache(){ try{ localStorage.setItem(CACHE_KEY, JSON.stringify(S)); }catch(e){} }
-function loadCache(){ try{ const d = JSON.parse(localStorage.getItem(CACHE_KEY) || 'null'); if (d){ COLS.concat('settings').forEach(k => { if (d[k]) S[k] = d[k]; }); return true; } }catch(e){} return false; }
-function clearCache(){ try{ localStorage.removeItem(CACHE_KEY); }catch(e){} }
-// id do registo no servidor calculado a partir de coleção + id na aplicação (15 caracteres a-z0-9)
-function h53(str, seed){ let h1 = 0xdeadbeef ^ seed, h2 = 0x41c6ce57 ^ seed; for (let i = 0; i < str.length; i++){ const c = str.charCodeAt(i); h1 = Math.imul(h1 ^ c, 2654435761); h2 = Math.imul(h2 ^ c, 1597334677); } h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909); h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909); return 4294967296 * (2097151 & h2) + (h1 >>> 0); }
-const docId = (col, ref) => (h53(col + '/' + ref, 7).toString(36) + h53(ref + '/' + col, 13).toString(36)).padStart(15, '0').slice(-15);
+let sb = null, WS = null, ME = null, ROLE = 'membro', online = navigator.onLine, channel = null;
+const cacheKey = () => `g3d-cache-${WS}`;
+function saveCache(){ try{ localStorage.setItem(cacheKey(), JSON.stringify(S)); }catch(e){} }
+function loadCache(){ try{ const d = JSON.parse(localStorage.getItem(cacheKey()) || 'null'); if (d){ COLS.concat('settings').forEach(k => { if (d[k]) S[k] = d[k]; }); return true; } }catch(e){} return false; }
 function applyRow(col, id, data){
   if (col === 'config'){ if (id === 'settings') S.settings = data ? cp(data) : cp(DEF); return; }
   if (!S[col]) return;
@@ -45,36 +41,23 @@ function applyRow(col, id, data){
   const o = {...cp(data), id};
   if (i >= 0) a[i] = o; else a.push(o);
 }
-function errMsg(e){
-  const d = e && e.response && e.response.data; const f = d && Object.values(d)[0];
-  return (f && f.message) || (e && e.response && e.response.message) || (e && e.message) || 'erro desconhecido';
-}
 function dbErr(error){
-  if (!navigator.onLine || (error && error.status === 0)) toast('Sem ligação ao servidor. A alteração não foi guardada.');
-  else if (error && (error.status === 401 || error.status === 403)) toast('Não tem permissão para alterar estes dados. Volte a entrar.');
-  else toast('Não foi possível guardar: ' + errMsg(error));
+  const msg = String(error && (error.message || error.code) || '');
+  if (!navigator.onLine || /fetch|network/i.test(msg)) toast('Sem ligação à internet. A alteração não foi guardada.');
+  else if (/row-level security|permission|42501/i.test(msg)) toast('Não tem permissão para alterar estes dados.');
+  else toast('Não foi possível guardar: ' + msg);
   throw error || new Error('save');
 }
 async function put(col, obj){
   obj = cp(obj);
   applyRow(col, obj.id, obj); saveCache(); scheduleRender();
-  const id = docId(col, obj.id), docs = pb.collection('docs');
-  try{
-    if (known.has(id)){
-      try{ await docs.update(id, {data:obj}); }
-      catch(e){ if (e.status !== 404) throw e; await docs.create({id, coll:col, ref:obj.id, data:obj}); }
-    } else {
-      try{ await docs.create({id, coll:col, ref:obj.id, data:obj}); }
-      catch(e){ if (e.status !== 400) throw e; await docs.update(id, {data:obj}); }   // já existia (criado noutro aparelho)
-    }
-    known.add(id);
-  }catch(e){ await refetch().catch(() => {}); scheduleRender(); dbErr(e); }
+  const {error} = await sb.from('docs').upsert({workspace_id:WS, collection:col, id:obj.id, data:obj});
+  if (error){ await refetch(); dbErr(error); }
 }
 async function del(col, id){
   applyRow(col, id, null); saveCache(); scheduleRender();
-  const rid = docId(col, id);
-  try{ await pb.collection('docs').delete(rid); known.delete(rid); }
-  catch(e){ if (e.status === 404){ known.delete(rid); return; } await refetch().catch(() => {}); scheduleRender(); dbErr(e); }
+  const {error} = await sb.from('docs').delete().match({workspace_id:WS, collection:col, id});
+  if (error){ await refetch(); dbErr(error); }
 }
 async function putSettings(s){ await put('config', {...cp(s), id:'settings'}); }
 const settings = () => ({...DEF, ...S.settings, matPrices:{...DEF.matPrices, ...(S.settings.matPrices || {})}});
@@ -84,59 +67,70 @@ function scheduleRender(){ clearTimeout(rTimer); rTimer = setTimeout(render, 40)
 
 async function refetch(){
   const fresh = {settings:cp(DEF)}; COLS.forEach(c => fresh[c] = []);
-  const rows = await pb.collection('docs').getFullList({batch:500, fields:'id,coll,ref,data', requestKey:null});
-  known.clear();
-  rows.forEach(r => {
-    known.add(r.id);
-    if (r.coll === 'config'){ if (r.ref === 'settings') fresh.settings = r.data || cp(DEF); }
-    else if (fresh[r.coll]) fresh[r.coll].push({...(r.data || {}), id:r.ref});
-  });
+  for (let from = 0; ; from += 1000){
+    const {data, error} = await sb.from('docs').select('collection,id,data').eq('workspace_id', WS).order('collection').order('id').range(from, from + 999);
+    if (error) throw error;
+    data.forEach(r => {
+      if (r.collection === 'config'){ if (r.id === 'settings') fresh.settings = r.data; }
+      else if (fresh[r.collection]) fresh[r.collection].push({...r.data, id:r.id});
+    });
+    if (data.length < 1000) break;
+  }
   Object.assign(S, fresh); saveCache();
 }
-async function subscribe(){
-  if (subscribed) return;
-  await pb.collection('docs').subscribe('*', ev => {
-    const r = ev.record; if (!r) return;
-    if (ev.action === 'delete'){ known.delete(r.id); applyRow(r.coll, r.ref, null); }
-    else { known.add(r.id); applyRow(r.coll, r.ref, r.data || {}); }
-    saveCache(); scheduleRender();
-  });
-  subscribed = true;
+function subscribe(){
+  if (channel) sb.removeChannel(channel);
+  channel = sb.channel('docs-' + WS)
+    .on('postgres_changes', {event:'*', schema:'public', table:'docs', filter:`workspace_id=eq.${WS}`}, p => {
+      const row = p.eventType === 'DELETE' ? p.old : p.new;
+      if (!row || (row.workspace_id && row.workspace_id !== WS)) return;
+      applyRow(row.collection, row.id, p.eventType === 'DELETE' ? null : row.data); saveCache(); scheduleRender();
+    })
+    .subscribe(status => { if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') setTimeout(subscribe, 5000); });
 }
-async function unsubscribe(){ if (!subscribed) return; subscribed = false; try{ await pb.collection('docs').unsubscribe('*'); }catch(e){} }
 
 /* ---------- início de sessão ---------- */
 function showAuth(mode = 'login', msg = ''){
   document.body.classList.add('auth-mode');
   const box = $('#auth');
   box.hidden = false; $('#app').hidden = true;
-  const title = {login:'Entrar', setup:'Configuração inicial', esqueci:'Esqueci-me da palavra-passe'}[mode];
+  const title = {login:'Entrar', signup:'Criar conta', reset:'Recuperar palavra-passe', newpass:'Nova palavra-passe'}[mode];
   box.innerHTML = `<form class="auth-card" id="auth-form" data-mode="${mode}" novalidate>
     <div class="auth-brand"><img src="icons/icon-192.png" alt="" width="48" height="48"><div><b>Gestão Impressão 3D</b><small>Orçamentos, encomendas e produção</small></div></div>
     <h1>${title}</h1>
     ${msg ? `<p class="auth-msg">${esc(msg)}</p>` : ''}
-    ${mode === 'setup' ? '<p class="muted" style="margin:0">Ainda não existe nenhuma conta neste servidor. Crie a conta do dono: é com ela que depois adiciona os colegas.</p>' + F('a-name', 'O seu nome', '<input id="a-name" autocomplete="name">') : ''}
-    ${mode === 'esqueci' ? `<p style="margin:0">Peça ao dono da conta para lhe definir uma nova palavra-passe em <b>Definições → Equipa</b>.</p><p class="muted" style="margin:0">Se é o dono e se esqueceu da sua, siga o passo "Recuperar o acesso do dono" no guia de instalação (README do projeto).</p>` : `
-    <div class="field"><label for="a-email">Email</label><input id="a-email" type="email" autocomplete="email" required></div>
-    <div class="field"><label for="a-pass">Palavra-passe</label><input id="a-pass" type="password" autocomplete="${mode === 'login' ? 'current-password' : 'new-password'}" minlength="8" required>${mode === 'setup' ? '<span class="hint">Pelo menos 8 caracteres.</span>' : ''}</div>
-    <button class="btn primary" type="submit">${mode === 'login' ? 'Entrar' : 'Criar conta do dono'}</button>`}
-    <div class="auth-links">${mode === 'login' ? '<button type="button" class="linkbtn2" data-auth="esqueci">Esqueci-me da palavra-passe</button>' : mode === 'esqueci' ? '<button type="button" class="linkbtn2" data-auth="login">Voltar a entrar</button>' : ''}</div>
+    ${mode !== 'newpass' ? `<div class="field"><label for="a-email">Email</label><input id="a-email" type="email" autocomplete="email" required></div>` : ''}
+    ${mode === 'login' || mode === 'signup' || mode === 'newpass' ? `<div class="field"><label for="a-pass">Palavra-passe</label><input id="a-pass" type="password" autocomplete="${mode === 'login' ? 'current-password' : 'new-password'}" minlength="8" required>${mode !== 'login' ? '<span class="hint">Pelo menos 8 caracteres.</span>' : ''}</div>` : ''}
+    <button class="btn primary" type="submit">${mode === 'login' ? 'Entrar' : mode === 'signup' ? 'Criar conta' : mode === 'reset' ? 'Enviar link de recuperação' : 'Guardar palavra-passe'}</button>
+    <div class="auth-links">
+      ${mode === 'login' ? '<button type="button" class="linkbtn2" data-auth="signup">Criar conta</button><button type="button" class="linkbtn2" data-auth="reset">Esqueci-me da palavra-passe</button>' : '<button type="button" class="linkbtn2" data-auth="login">Voltar a entrar</button>'}
+    </div>
+    ${mode === 'signup' ? '<p class="hint">Se foi convidado por um colega, use o mesmo email do convite: entra logo na equipa dele.</p>' : ''}
   </form>`;
   const f = box.querySelector('input'); if (f) f.focus();
 }
 async function authSubmit(form){
   const mode = form.dataset.mode, email = val('a-email').trim(), pass = val('a-pass');
-  const btn = form.querySelector('button[type=submit]'); if (btn) btn.disabled = true;
+  const btn = form.querySelector('button[type=submit]'); btn.disabled = true;
   try{
-    if (mode === 'setup'){
-      if (pass.length < 8) return showAuth('setup', 'A palavra-passe tem de ter pelo menos 8 caracteres.');
-      try{ await pb.send('/api/viana3d/primeiro-dono', {method:'POST', body:{email, password:pass, name:val('a-name').trim()}}); }
-      catch(e){ return showAuth(e.status === 403 ? 'login' : 'setup', errMsg(e)); }
+    if (mode === 'login'){
+      const {error} = await sb.auth.signInWithPassword({email, password:pass});
+      if (error) return showAuth('login', /confirm/i.test(error.message) ? 'Confirme primeiro o seu email (veja a caixa de correio).' : 'Email ou palavra-passe errados.');
+    } else if (mode === 'signup'){
+      if (pass.length < 8) return showAuth('signup', 'A palavra-passe tem de ter pelo menos 8 caracteres.');
+      const {data, error} = await sb.auth.signUp({email, password:pass, options:{emailRedirectTo:location.origin + location.pathname}});
+      if (error) return showAuth('signup', error.message);
+      if (!data.session) return showAuth('login', 'Conta criada. Enviámos um email de confirmação: abra o link e depois entre aqui.');
+    } else if (mode === 'reset'){
+      const {error} = await sb.auth.resetPasswordForEmail(email, {redirectTo:location.origin + location.pathname});
+      return showAuth('login', error ? error.message : 'Se o email existir, recebe um link para definir nova palavra-passe.');
+    } else if (mode === 'newpass'){
+      if (pass.length < 8) return showAuth('newpass', 'A palavra-passe tem de ter pelo menos 8 caracteres.');
+      const {error} = await sb.auth.updateUser({password:pass});
+      if (error) return showAuth('newpass', error.message);
+      toast('Palavra-passe alterada.'); await startSession();
     }
-    try{ await pb.collection('users').authWithPassword(email, pass); }
-    catch(e){ return showAuth('login', e.status === 0 ? 'Não foi possível ligar ao servidor.' : e.status === 429 ? 'Demasiadas tentativas. Aguarde um pouco e tente de novo.' : 'Email ou palavra-passe errados.'); }
-    await startSession();
-  } finally { if (btn) btn.disabled = false; }
+  } finally { btn.disabled = false; }
 }
 document.addEventListener('click', e => { const b = e.target.closest('[data-auth]'); if (b) showAuth(b.dataset.auth); });
 document.addEventListener('submit', e => { if (e.target.id === 'auth-form'){ e.preventDefault(); e.stopImmediatePropagation(); authSubmit(e.target); } }, true);
@@ -144,75 +138,62 @@ document.addEventListener('submit', e => { if (e.target.id === 'auth-form'){ e.p
 let sessionBusy = null;
 function startSession(){ if (!sessionBusy) sessionBusy = runSession().finally(() => { sessionBusy = null; }); return sessionBusy; }
 async function runSession(){
-  if (!pb.authStore.isValid || !pb.authStore.record || pb.authStore.record.collectionName !== 'users'){
-    let conf = true;
-    try{ conf = (await pb.send('/api/viana3d/estado', {method:'GET', requestKey:null})).configurado; }catch(e){}
-    showAuth(conf ? 'login' : 'setup'); return;
-  }
-  ME = pb.authStore.record; ROLE = ME.role || 'membro';
+  const {data:{session}} = await sb.auth.getSession();
+  if (!session){ showAuth('login'); return; }
+  ME = session.user;
   document.body.classList.remove('auth-mode'); $('#auth').hidden = true; $('#app').hidden = false;
-  if (loadCache()){ loaded = true; render(); } else render();
+  // workspace: lembrado neste aparelho para abrir já com os dados em cache
+  WS = localStorage.getItem('g3d-ws-' + ME.id);
+  if (WS && loadCache()){ loaded = true; render(); }
+  else render();
   try{
-    await pb.collection('users').authRefresh({requestKey:null});
-    ME = pb.authStore.record; ROLE = ME.role || 'membro';
-    await refetch(); loaded = true; online = true;
-    await subscribe(); render();
+    const {data, error} = await sb.rpc('bootstrap');
+    if (error) throw error;
+    WS = data.workspace_id; ROLE = data.role || 'membro';
+    localStorage.setItem('g3d-ws-' + ME.id, WS);
+    if (!loaded) loadCache();
+    await refetch(); loaded = true; subscribe(); render();
   }catch(err){
-    if (err && (err.status === 401 || err.status === 403 || err.status === 404)){ pb.authStore.clear(); clearCache(); return showAuth('login', 'A sessão terminou. Volte a entrar.'); }
-    online = false;
-    if (loaded){ render(); toast('Sem ligação ao servidor: a mostrar os dados guardados neste aparelho.'); }
-    else { $('#view').innerHTML = `<div class="empty"><b>Não foi possível ligar ao servidor.</b><span>Verifique a ligação à internet e se o Raspberry Pi está ligado.</span><button class="btn" onclick="location.reload()">Tentar de novo</button></div>`; }
+    if (loaded){ online = false; render(); toast('Sem ligação: a mostrar os dados guardados neste aparelho.'); }
+    else { $('#view').innerHTML = `<div class="empty"><b>Não foi possível ligar ao servidor.</b><span>${esc(err.message || '')}</span><button class="btn" onclick="location.reload()">Tentar de novo</button></div>`; }
   }
 }
 async function signOut(){
-  await unsubscribe();
-  ME = null; pb.authStore.clear(); clearCache();
-  Object.assign(S, {settings:cp(DEF)}); COLS.forEach(c => S[c] = []); loaded = false; ME = null; known.clear();
+  if (channel) sb.removeChannel(channel);
+  await sb.auth.signOut();
+  Object.assign(S, {settings:cp(DEF)}); COLS.forEach(c => S[c] = []); loaded = false; WS = null;
   showAuth('login', 'Sessão terminada.');
 }
 
 /* ---------- equipa ---------- */
+async function loadTeam(){
+  const [m, i] = await Promise.all([
+    sb.from('workspace_members').select('user_id,email,role,created_at').eq('workspace_id', WS).order('created_at'),
+    sb.from('workspace_invites').select('email,role,created_at').eq('workspace_id', WS).order('created_at')]);
+  return {members:m.data || [], invites:i.data || []};
+}
 async function renderTeam(){
   const box = $('#team'); if (!box) return;
-  let list;
-  try{ list = await pb.collection('users').getFullList({sort:'created', fields:'id,email,name,role,created', requestKey:null}); }
-  catch(e){ box.innerHTML = '<p class="muted">Sem ligação ao servidor.</p>'; return; }
+  let t; try{ t = await loadTeam(); }catch(e){ box.innerHTML = '<p class="muted">Sem ligação.</p>'; return; }
   const owner = ROLE === 'dono';
-  box.innerHTML = `<ul class="alerts">${list.map(u => `<li><span class="pill ${u.role === 'dono' ? 'info' : ''}">${u.role === 'dono' ? 'Dono' : 'Membro'}</span><div class="txt">${esc(u.name || u.email)}${u.id === ME.id ? ' <small>(você)</small>' : ''}<small>${esc(u.email)}</small></div>
-      ${owner && u.id !== ME.id ? `<span class="actions"><button type="button" class="btn ghost sm" data-act="team-pass" data-id="${u.id}">Nova palavra-passe</button><button type="button" class="btn ghost sm danger" data-act="team-rm" data-id="${u.id}">Remover</button></span>` : ''}</li>`).join('')}</ul>
-    ${owner ? `<div class="row"><div class="field"><label for="team-name">Nome</label><input id="team-name"></div><div class="field"><label for="team-email">Email</label><input id="team-email" type="email"></div><div class="field"><label for="team-pw">Palavra-passe inicial</label><input id="team-pw" type="text" autocomplete="off" placeholder="mín. 8 caracteres"></div></div>
-      <div class="actions"><button type="button" class="btn" data-act="team-add">Adicionar à equipa</button></div><p class="hint muted" style="margin:0">Dê ao colega o endereço da aplicação, o email e esta palavra-passe; ele pode mudá-la depois em Definições → Conta.</p>` : '<p class="hint muted">Só o dono da conta pode adicionar ou remover pessoas.</p>'}`;
+  box.innerHTML = `<ul class="alerts">${t.members.map(m => `<li><span class="pill ${m.role === 'dono' ? 'info' : ''}">${m.role === 'dono' ? 'Dono' : 'Membro'}</span><div class="txt">${esc(m.email || '—')}${m.user_id === ME.id ? ' <small>(você)</small>' : ''}</div>${owner && m.user_id !== ME.id ? `<button type="button" class="btn ghost sm danger" data-act="team-rm" data-id="${m.user_id}">Remover</button>` : ''}</li>`).join('')}
+    ${t.invites.map(i => `<li><span class="pill warn">Convidado</span><div class="txt">${esc(i.email)}<small>Ainda não criou conta</small></div>${owner ? `<button type="button" class="btn ghost sm" data-act="team-uninvite" data-id="${esc(i.email)}">Cancelar</button>` : ''}</li>`).join('')}</ul>
+    ${owner ? `<div class="addpart"><input id="team-email" type="email" placeholder="email do colega" aria-label="Email do colega"><button type="button" class="btn" data-act="team-invite">Convidar</button></div><p class="hint muted" style="margin:0">O colega cria conta na aplicação com este email e entra automaticamente na equipa.</p>` : '<p class="hint muted">Só o dono da conta pode convidar ou remover pessoas.</p>'}`;
 }
 async function teamAction(a, id){
-  try{
-    if (a === 'team-add'){
-      const email = val('team-email').trim().toLowerCase(), pw = val('team-pw'), name = val('team-name').trim();
-      if (!/^\S+@\S+\.\S+$/.test(email)){ toast('Indique um email válido.'); return; }
-      if (pw.length < 8){ toast('A palavra-passe inicial tem de ter pelo menos 8 caracteres.'); return; }
-      await pb.collection('users').create({email, emailVisibility:true, name, password:pw, passwordConfirm:pw, role:'membro', verified:true});
-      toast(`${name || email} foi adicionado à equipa.`);
-    } else if (a === 'team-pass'){
-      const pw = Math.random().toString(36).slice(2, 7) + Math.random().toString(36).slice(2, 7);
-      await pb.collection('users').update(id, {password:pw, passwordConfirm:pw});
-      openDlg('Nova palavra-passe', `<p style="margin:0">A nova palavra-passe é:</p><p class="mono" style="font-size:1.4rem;margin:0;user-select:all">${esc(pw)}</p><p class="muted" style="margin:0">Dê-a ao colega; ele pode mudá-la em Definições → Conta. A sessão dele noutros aparelhos termina.</p>`, {submit:''});
-      return;
-    } else if (a === 'team-rm'){
-      confirmDlg('Remover da equipa', 'Esta pessoa deixa de conseguir entrar na aplicação. Os registos que criou mantêm-se.', 'Remover', async () => { await pb.collection('users').delete(id); toast('Removido da equipa.'); renderTeam(); });
-      return;
-    }
-  }catch(e){ toast(errMsg(e)); return; }
+  if (a === 'team-invite'){
+    const email = val('team-email').trim().toLowerCase();
+    if (!/^\S+@\S+\.\S+$/.test(email)){ toast('Indique um email válido.'); return; }
+    const {data, error} = await sb.rpc('invite_member', {ws:WS, mail:email});
+    if (error){ toast(error.message); return; }
+    toast(data === 'added' ? 'Adicionado à equipa.' : 'Convite registado. Peça ao colega para criar conta com este email.');
+  } else if (a === 'team-uninvite'){
+    const {error} = await sb.from('workspace_invites').delete().match({workspace_id:WS, email:id}); if (error){ toast(error.message); return; }
+  } else if (a === 'team-rm'){
+    const {error} = await sb.from('workspace_members').delete().match({workspace_id:WS, user_id:id}); if (error){ toast(error.message); return; }
+    toast('Removido da equipa.');
+  }
   renderTeam();
-}
-async function changeOwnPassword(){
-  const old = val('acc-old'), n1 = val('acc-new'), n2 = val('acc-new2');
-  if (n1.length < 8){ toast('A nova palavra-passe tem de ter pelo menos 8 caracteres.'); return; }
-  if (n1 !== n2){ toast('As duas palavras-passe novas não são iguais.'); return; }
-  try{
-    await pb.collection('users').update(ME.id, {oldPassword:old, password:n1, passwordConfirm:n2});
-    await pb.collection('users').authWithPassword(ME.email, n1);
-    ['acc-old', 'acc-new', 'acc-new2'].forEach(i => { const el = document.getElementById(i); if (el) el.value = ''; });
-    toast('Palavra-passe alterada.');
-  }catch(e){ toast(e.status === 400 ? 'A palavra-passe atual está errada.' : errMsg(e)); }
 }
 
 /* ---------- ficheiros: guardar e partilhar ---------- */
@@ -228,16 +209,18 @@ function canShareFile(file){ try{ return !!(navigator.canShare && navigator.canS
 
 async function init(){
   window.addEventListener('hashchange', render);
-  window.addEventListener('online', () => { if (ME) startSession(); });
+  window.addEventListener('online', () => { online = true; if (WS) refetch().then(render).catch(() => {}); render(); });
   window.addEventListener('offline', () => { online = false; render(); });
-  if (!window.PocketBase){
+  if (!CFG.supabaseUrl || !CFG.supabaseAnonKey || !window.supabase){
     $('#auth').hidden = false; $('#app').hidden = true;
-    $('#auth').innerHTML = '<div class="auth-card"><h1>Erro ao carregar</h1><p>Falta o ficheiro vendor/pocketbase.umd.js. Volte a instalar a aplicação.</p></div>';
+    $('#auth').innerHTML = '<div class="auth-card"><h1>Falta configurar</h1><p>Indique o endereço e a chave pública do Supabase no ficheiro <code>config.js</code> (ver README).</p></div>';
     return;
   }
-  pb = new window.PocketBase(CFG.serverUrl || location.origin);
-  pb.autoCancellation(false);
-  pb.authStore.onChange(() => { if (!pb.authStore.isValid && ME){ ME = null; unsubscribe(); showAuth('login', 'A sessão terminou. Volte a entrar.'); } });
+  sb = window.supabase.createClient(CFG.supabaseUrl, CFG.supabaseAnonKey, {auth:{persistSession:true, autoRefreshToken:true, detectSessionInUrl:true}});
+  sb.auth.onAuthStateChange((event) => {
+    if (event === 'PASSWORD_RECOVERY') showAuth('newpass', 'Escolha uma nova palavra-passe.');
+    if (event === 'SIGNED_IN' && !WS) startSession();
+  });
   await startSession();
 }
 
@@ -504,9 +487,7 @@ function vSettings(){
     <div class="actions"><button class="btn primary" type="submit">Guardar definições</button></div>
   </form>
   <section class="panel"><div class="panel-h"><h2>Equipa</h2></div><p class="muted" style="margin:0">Todas as pessoas da equipa veem e alteram os mesmos dados, em qualquer aparelho.</p><div id="team"><p class="muted">A carregar…</p></div></section>
-  <section class="panel"><div class="panel-h"><h2>Conta</h2></div><p style="margin:0">Sessão iniciada como <b>${esc(ME ? (ME.name ? ME.name + ' · ' : '') + ME.email : '')}</b> (${ROLE === 'dono' ? 'dono' : 'membro'}).</p>
-    <div class="row"><div class="field"><label for="acc-old">Palavra-passe atual</label><input id="acc-old" type="password" autocomplete="current-password"></div><div class="field"><label for="acc-new">Nova palavra-passe</label><input id="acc-new" type="password" autocomplete="new-password"></div><div class="field"><label for="acc-new2">Repetir a nova</label><input id="acc-new2" type="password" autocomplete="new-password"></div></div>
-    <div class="actions"><button type="button" class="btn" data-act="acc-pass">Mudar palavra-passe</button><button type="button" class="btn ghost" data-act="logout">Terminar sessão</button></div></section>`;
+  <section class="panel"><div class="panel-h"><h2>Conta</h2></div><p style="margin:0">Sessão iniciada como <b>${esc(ME ? ME.email : '')}</b>.</p><div class="actions"><button type="button" class="btn" data-act="logout">Terminar sessão</button></div></section>`;
 }
 
 function vParts(){
@@ -1500,8 +1481,7 @@ document.addEventListener('click', async e => {
       case 'plan-done': finishPlan(find('plan')); break;
       case 'compact': await compactQueue(id); break;
       case 'logout': await signOut(); break;
-      case 'team-add': case 'team-pass': case 'team-rm': await teamAction(a, id); break;
-      case 'acc-pass': await changeOwnPassword(); break;
+      case 'team-invite': case 'team-uninvite': case 'team-rm': await teamAction(a, id); break;
       case 'new-client': clientForm(); break;
       case 'edit-client': clientForm(find('clients')); break;
       case 'quote-client': quoteForm(null, {clientId:id}); break;
