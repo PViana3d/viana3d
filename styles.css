@@ -186,6 +186,25 @@ dialog::backdrop{background:rgba(10,16,14,.5)}
 .src-box{display:flex;gap:10px;align-items:center;font-size:.82rem;color:var(--muted);background:var(--sunk);border-radius:var(--r);padding:8px 10px}
 .sum .l.disc span:last-child{color:var(--ok)}
 .bar i.info{background:var(--accent)}
+/* vários filamentos */
+.sw{display:inline-block;width:14px;height:14px;border-radius:50%;border:1px solid var(--line);flex:none;vertical-align:-2px;background-clip:padding-box}
+.sws{display:inline-flex;margin-right:6px}.sws .sw{margin-left:-4px}.sws .sw:first-child{margin-left:0}
+.fils{display:flex;flex-direction:column;gap:6px}
+.filrow{display:grid;grid-template-columns:auto 22px minmax(0,1fr) 90px auto auto;gap:6px;align-items:center}
+.filrow select,.filrow input{border:1px solid var(--line);background:var(--surface);border-radius:6px;padding:7px 9px;min-width:0;width:100%}
+.filrow .fn{font-size:.75rem;color:var(--muted);text-align:right}
+.filrow .u{font-size:.8rem;color:var(--muted)}
+.fils-foot{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:6px;font-size:.82rem}
+.qi-fils,.pl-fils{display:flex;flex-direction:column;gap:4px;min-width:0}
+.qf{display:flex;gap:6px;align-items:center;min-width:0}
+.qf select{flex:1;min-width:0;border:1px solid var(--line);background:var(--surface);border-radius:6px;padding:7px 9px}
+.qf .num{font-size:.76rem;white-space:nowrap}
+.usel{display:flex;gap:5px;align-items:center;white-space:nowrap}
+.usel + .usel{margin-top:2px}
+.qitem,.plrow{grid-auto-flow:row dense}
+.qitem .qi-mat.multi,.plrow .pl-fils.multi{grid-column:1 / -1}
+.qi-mat.multi .qi-fils,.pl-fils.multi{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:6px 14px}
+.pl-fils.multi > label{grid-column:1 / -1}
 .logo-box{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
 .logo-prev{width:160px;height:64px;border:1px dashed var(--line);border-radius:6px;display:grid;place-items:center;background:#fff;overflow:hidden;font-size:.8rem}
 .logo-prev img{max-width:150px;max-height:56px;object-fit:contain}
