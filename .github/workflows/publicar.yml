@@ -1,21 +1,22 @@
 name: Publicar
 
+# Em cada alteração no ramo main, monta o pacote da aplicação e coloca-o na versão "pi-latest".
+# O Raspberry Pi descarrega-o todas as noites (ou com: sudo viana3d-atualizar).
+
 on:
   push:
     branches: [main]
   workflow_dispatch:
 
 permissions:
-  contents: read
-  pages: write
-  id-token: write
+  contents: write
 
 concurrency:
-  group: pages
-  cancel-in-progress: true
+  group: publicar
+  cancel-in-progress: false
 
 jobs:
-  build:
+  pacote:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -24,20 +25,15 @@ jobs:
           node-version: 20
       - run: npm install --no-audit --no-fund
       - run: node scripts/build.mjs
+      - run: bash -n pi/instalar.sh && bash -n pi/atualizar.sh
+      - name: Atualizar a versão pi-latest
         env:
-          SUPABASE_URL: ${{ vars.SUPABASE_URL }}
-          SUPABASE_ANON_KEY: ${{ vars.SUPABASE_ANON_KEY }}
-      - uses: actions/configure-pages@v5
-      - uses: actions/upload-pages-artifact@v3
-        with:
-          path: dist
-
-  deploy:
-    needs: build
-    runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - id: deployment
-        uses: actions/deploy-pages@v4
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          notes="Pacote da aplicação para o Raspberry Pi (commit ${GITHUB_SHA::8}). Instalação: ver README."
+          if gh release view pi-latest >/dev/null 2>&1; then
+            gh release upload pi-latest dist/viana3d-pi.zip --clobber
+            gh release edit pi-latest --notes "$notes"
+          else
+            gh release create pi-latest dist/viana3d-pi.zip --title "Raspberry Pi (mais recente)" --notes "$notes" --latest
+          fi
