@@ -202,6 +202,17 @@ dialog::backdrop{background:rgba(10,16,14,.5)}
 .usel{display:flex;gap:5px;align-items:center;white-space:nowrap}
 .usel + .usel{margin-top:2px}
 .qitem,.plrow{grid-auto-flow:row dense}
+/* compras */
+.pline{border:1px solid var(--line);border-radius:var(--r);padding:10px 12px;display:flex;flex-direction:column;gap:8px;background:var(--surface)}
+.pl-head{display:flex;align-items:center;gap:10px}
+.pl-head .pl-tot{margin-left:auto;font-size:.95rem}
+.pl-body{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px;align-items:end}
+.pl-body .field label{font-size:.7rem}
+.pl-body .f-wide{grid-column:span 2}
+.pl-body .f-hex,.pl-body .f-d{max-width:90px}
+.pl-new{display:contents}
+.pl-new[hidden]{display:none!important}
+.count-in{font-family:var(--f-mono);font-size:.72rem;background:#E3A43C;color:#1B1405;border-radius:10px;padding:0 6px;margin-left:4px}
 .qitem .qi-mat.multi,.plrow .pl-fils.multi{grid-column:1 / -1}
 .qi-mat.multi .qi-fils,.pl-fils.multi{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:6px 14px}
 .pl-fils.multi > label{grid-column:1 / -1}

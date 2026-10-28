@@ -18,8 +18,8 @@ const DEF = {company:'Oficina 3D', kwh:0.16, labor:15, margin:40, failure:10, va
   matPrices:{PLA:20, PETG:22, ABS:22, ASA:28, TPU:30, Resina:35},
   cNif:'', cAddress:'', cPhone:'', cEmail:'', cWeb:'', cIban:'', logo:'', pdfColor:'#0A7470',
   cond:'Pagamento: 50% na adjudicação e 50% na entrega.\nPreços em euros. Portes de envio não incluídos, salvo indicação em contrário.'};
-const COLS = ['spools','printers','maint','jobs','quotes','clients','parts','orders','plan'];
-const S = {spools:[], printers:[], maint:[], jobs:[], quotes:[], clients:[], parts:[], orders:[], plan:[], settings:cp(DEF)};
+const COLS = ['spools','printers','maint','jobs','quotes','clients','parts','orders','plan','purchases','stock'];
+const S = {spools:[], printers:[], maint:[], jobs:[], quotes:[], clients:[], parts:[], orders:[], plan:[], purchases:[], stock:[], settings:cp(DEF)};
 const QSTATUS = {rascunho:['Rascunho',''], enviado:['Enviado','info'], aceite:['Aceite','ok'], recusado:['Recusado','bad']};
 const DEFAULT_TASKS = [['Limpeza da base e bico', 50], ['Lubrificação dos eixos', 200], ['Verificar tensão das correias', 300], ['Troca de bico', 500]];
 
@@ -322,6 +322,8 @@ function alerts(){
     else if (dl <= 2) out.push({cls:'warn', title:`Encomenda ${o.number} · ${clientName(o) || 'sem cliente'}`, sub:`Entrega ${dl === 0 ? 'hoje' : 'em ' + dl + ' dias úteis'} · ${s.done}/${s.total} unidades feitas`, href:'#encomendas'});
     if (s.toPlan) out.push({cls:'info', title:`Encomenda ${o.number}: ${s.toPlan} unidades por planear`, sub:`Prazo ${fmtDate(o.due)}`, href:'#producao'}); });
   S.quotes.filter(q => q.status === 'aceite' && !orderOf(q)).forEach(q => out.push({cls:'info', title:`Orçamento ${q.number} aceite`, sub:'Ainda não foi convertido em encomenda', href:'#encomendas'}));
+  S.stock.filter(stockLow).forEach(x => out.push({cls:(+x.qty || 0) <= 0 ? 'bad' : 'warn', title:`${x.name} (${x.category || 'material'})`, sub:`Stock baixo: ${qtyTxt(x.qty, x.unit)} (mínimo ${qtyTxt(x.min, x.unit)})`, href:'#compras'}));
+  S.purchases.filter(p => p.status !== 'recebida' && p.date && p.date <= addDaysStr(today(), -7)).forEach(p => out.push({cls:'info', title:`Compra ${p.number} por receber`, sub:`${p.supplier || 'Sem fornecedor'} · encomendada a ${fmtDate(p.date)}`, href:'#compras'}));
   const lateLim = Date.now() - 30 * 60e3;
   S.plan.filter(p => p.status === 'planeada' && p.start && new Date(p.start) < lateLim).forEach(p => out.push({cls:'warn', title:`Impressão atrasada: ${p.desc}`, sub:`Devia ter começado ${fmtDT(p.start)} · ${(S.printers.find(x => x.id === p.printerId) || {}).name || ''}`, href:'#producao'}));
   const rank = {bad:0, warn:1, info:2};
@@ -337,16 +339,17 @@ const ICONS = {
   relatorios:'<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>',
   encomendas:'<path d="M3 7l9-4 9 4v10l-9 4-9-4z"/><path d="M3 7l9 4 9-4M12 11v10M7.5 5l9 4"/>',
   producao:'<rect x="3" y="4" width="18" height="17" rx="2"/><path d="M3 9h18M8 2v4M16 2v4M7 13h5M7 17h9"/>',
+  compras:'<path d="M3 4h2l2.4 11.2a2 2 0 0 0 2 1.6h7.7a2 2 0 0 0 2-1.5L21 8H6"/><circle cx="10" cy="20.5" r="1.3"/><circle cx="17" cy="20.5" r="1.3"/>',
   pecas:'<path d="M12 2 3 7v10l9 5 9-5V7z"/><path d="M3 7l9 5 9-5M12 12v10"/>',
   clientes:'<circle cx="9" cy="8" r="4"/><path d="M2 21c0-4 3-6 7-6s7 2 7 6M16 4a4 4 0 0 1 0 8M22 21c0-3-2-5-4-5.6"/>',
   definicoes:'<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1 7 17M17 7l2.1-2.1"/>'
 };
-const VIEWS = [['painel','Painel'],['orcamentos','Orçamentos'],['encomendas','Encomendas'],['producao','Produção'],['pecas','Peças'],['clientes','Clientes'],['bobines','Bobines'],['manutencao','Impressoras'],['relatorios','Relatórios'],['definicoes','Definições']];
+const VIEWS = [['painel','Painel'],['orcamentos','Orçamentos'],['encomendas','Encomendas'],['producao','Produção'],['pecas','Peças'],['clientes','Clientes'],['bobines','Bobines'],['compras','Compras'],['manutencao','Impressoras'],['relatorios','Relatórios'],['definicoes','Definições']];
 const current = () => { const h = location.hash.slice(1); return VIEWS.some(v => v[0] === h) ? h : 'painel'; };
 
 function renderNav(){
   const v = current(), a = loaded ? alerts() : [];
-  const cnt = {bobines: a.filter(x => x.href === '#bobines').length, manutencao: a.filter(x => x.href === '#manutencao').length, encomendas: a.filter(x => x.href === '#encomendas' && x.cls !== 'info').length, producao: a.filter(x => x.href === '#producao').length};
+  const cnt = {bobines: a.filter(x => x.href === '#bobines').length, manutencao: a.filter(x => x.href === '#manutencao').length, encomendas: a.filter(x => x.href === '#encomendas' && x.cls !== 'info').length, producao: a.filter(x => x.href === '#producao').length, compras: a.filter(x => x.href === '#compras' && x.cls !== 'info').length};
   $('#nav').innerHTML = VIEWS.map(([k, l]) => `<a href="#${k}" ${k === v ? 'aria-current="page"' : ''}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${ICONS[k]}</svg>${l}${cnt[k] ? `<span class="count">${cnt[k]}</span>` : ''}</a>`).join('');
   $('#brandName').textContent = settings().company || 'Oficina 3D';
   $('#storeNote').innerHTML = ME ? `<span class="who">${esc(ME.email)}</span><span class="conn ${online ? 'on' : 'off'}">${online ? 'Ligado' : 'Sem ligação'}</span><button type="button" class="linkbtn2" data-act="logout">Terminar sessão</button>` : '';
@@ -356,14 +359,14 @@ function render(){
   renderNav();
   if (!loaded){ $('#view').innerHTML = '<div class="loading">A carregar dados…</div>'; return; }
   const v = current();
-  const html = ({painel:vPainel, orcamentos:vQuotes, encomendas:vOrders, producao:vProduction, pecas:vParts, clientes:vClients, bobines:vSpools, manutencao:vPrinters, relatorios:vReports, definicoes:vSettings})[v]();
+  const html = ({painel:vPainel, orcamentos:vQuotes, encomendas:vOrders, producao:vProduction, pecas:vParts, clientes:vClients, bobines:vSpools, compras:vPurchases, manutencao:vPrinters, relatorios:vReports, definicoes:vSettings})[v]();
   const banner = online ? '' : '<div class="banner">Sem ligação à internet. Está a ver os dados guardados neste aparelho; as alterações só são possíveis com ligação.</div>';
   $('#view').innerHTML = banner + html;
   if (v === 'definicoes') renderTeam();
 }
 
 /* ---------- vistas ---------- */
-const st = {month: today().slice(0,7), repPrinter:'', spoolMat:'', spoolStatus:'', qStatus:'', partQ:'', partClient:'', clientQ:'', oFilter:'curso', gDays:3};
+const st = {month: today().slice(0,7), repPrinter:'', spoolMat:'', spoolStatus:'', qStatus:'', partQ:'', partClient:'', clientQ:'', oFilter:'curso', gDays:3, cTab:'compras', pFilter:''};
 
 function kpiRow(s){
   return `<div class="kpis">
@@ -415,7 +418,7 @@ function spoolCard(s){
       <div class="ring"><svg viewBox="0 0 72 72"><circle cx="36" cy="36" r="30" fill="none" stroke="var(--sunk)" stroke-width="9"/><circle cx="36" cy="36" r="30" fill="none" stroke="${esc(s.hex || '#888')}" stroke-width="9" stroke-dasharray="${C * pct} ${C}"/><circle cx="36" cy="36" r="25.5" fill="none" stroke="var(--line)" stroke-width="1"/><circle cx="36" cy="36" r="34.5" fill="none" stroke="var(--line)" stroke-width="1"/></svg><span>${num(pct * 100)}%</span></div>
       <div class="spool-id"><b>${esc(spoolLabel(s))}</b><small>${esc(s.brand || 'Sem marca')}${s.diameter ? ' · ' + esc(s.diameter) + ' mm' : ''}</small><span class="pill ${c}">${t}</span></div>
     </div>
-    <dl class="meta"><dt>Restante</dt><dd>${num(spoolRemain(s))} / ${num(s.weight)} g</dd><dt>Preço</dt><dd>${eur(s.price)} · ${eur(spoolEurKg(s))}/kg</dd><dt>Comprada</dt><dd>${fmtDate(s.bought)}</dd>${s.location ? `<dt>Local</dt><dd>${esc(s.location)}</dd>` : ''}</dl>
+    <dl class="meta"><dt>Restante</dt><dd>${num(spoolRemain(s))} / ${num(s.weight)} g</dd><dt>Preço</dt><dd>${eur(s.price)} · ${eur(spoolEurKg(s))}/kg</dd><dt>Comprada</dt><dd>${fmtDate(s.bought)}</dd>${s.purchaseNumber ? `<dt>Compra</dt><dd>${esc(s.purchaseNumber)}${s.supplier ? ' · ' + esc(s.supplier) : ''}</dd>` : ''}${s.location ? `<dt>Local</dt><dd>${esc(s.location)}</dd>` : ''}</dl>
     <div class="card-foot"><button class="btn ghost sm" data-act="weigh" data-id="${s.id}">Pesar</button><button class="btn ghost sm" data-act="edit-spool" data-id="${s.id}">Editar</button><button class="btn ghost sm danger" data-act="del" data-col="spools" data-id="${s.id}">Eliminar</button></div>
   </article>`;
 }
@@ -994,6 +997,202 @@ function openPdfReady(name, blob, file, share){
   });
 }
 
+/* ---------- compras e stock de materiais ---------- */
+const PCAT = ['Filamento', 'Peças e manutenção', 'Consumíveis', 'Acabamentos', 'Embalagem', 'Ferragens', 'Ferramentas', 'Outros'];
+const UNITS = ['un.', 'g', 'kg', 'ml', 'l', 'm', 'rolo', 'caixa'];
+const PSTAT = {encomendada:['Encomendada', 'warn'], recebida:['Recebida', 'ok']};
+const LKIND = {bobine:'Bobine', material:'Material', despesa:'Outra despesa'};
+const lineSub = l => (+l.qty || 0) * (+l.price || 0);
+const lineCat = l => l.kind === 'bobine' ? 'Filamento' : (l.category || 'Outros');
+function purchaseTotals(p){
+  const lines = p.lines || [], sub = lines.reduce((a, l) => a + lineSub(l), 0), ship = +p.shipping || 0;
+  const share = l => sub > 0 ? lineSub(l) / sub * ship : 0;
+  // custo por unidade com a parte dos portes (quando se distribui)
+  const unitCost = l => (+l.qty || 0) > 0 ? (+l.price || 0) + (p.shipSplit === false ? 0 : share(l) / (+l.qty)) : (+l.price || 0);
+  const byCat = {}; lines.forEach(l => { const c = lineCat(l); byCat[c] = (byCat[c] || 0) + lineSub(l) + (p.shipSplit === false ? 0 : share(l)); });
+  if (p.shipSplit === false && ship) byCat['Portes'] = (byCat['Portes'] || 0) + ship;
+  return {sub, ship, total:r2(sub + ship), unitCost, byCat};
+}
+const stockLow = x => (+x.min || 0) > 0 && (+x.qty || 0) <= (+x.min || 0);
+const qtyTxt = (q, u) => `${num(q, Number.isInteger(+q) ? 0 : 2)} ${u || 'un.'}`;
+const lineSummary = p => (p.lines || []).map(l => l.kind === 'bobine' ? `${l.qty}× bobine ${l.material} ${l.color || ''}`.trim() : `${num(l.qty, Number.isInteger(+l.qty) ? 0 : 2)}${l.kind === 'material' ? ' ' + (l.unit || 'un.') : '×'} ${l.kind === 'material' ? (l.name || 'material') : (l.desc || 'despesa')}`).join(', ');
+const suppliers = () => [...new Set(S.purchases.map(p => (p.supplier || '').trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'pt'));
+
+function vPurchases(){
+  const tab = st.cTab;
+  const yr = today().slice(0, 4), mo = today().slice(0, 7);
+  const tot = p => purchaseTotals(p).total;
+  const spentM = S.purchases.filter(p => (p.date || '').startsWith(mo)).reduce((a, p) => a + tot(p), 0);
+  const spentY = S.purchases.filter(p => (p.date || '').startsWith(yr)).reduce((a, p) => a + tot(p), 0);
+  const pending = S.purchases.filter(p => p.status !== 'recebida');
+  const stockVal = S.stock.reduce((a, x) => a + Math.max(0, +x.qty || 0) * (+x.avgCost || 0), 0);
+  const tabs = `<div class="chips"><button class="chip" data-act="filter" data-k="cTab" data-v="compras" aria-pressed="${tab === 'compras'}">Compras</button><button class="chip" data-act="filter" data-k="cTab" data-v="stock" aria-pressed="${tab === 'stock'}">Materiais em stock${S.stock.filter(stockLow).length ? ` <span class="count-in">${S.stock.filter(stockLow).length}</span>` : ''}</button></div>`;
+  const head = `<div class="head"><div><div class="eyebrow">Compras e stock</div><h1>Compras</h1><p>Gasto este mês: <span class="num">${eur(spentM)}</span> · em ${yr}: <span class="num">${eur(spentY)}</span>${pending.length ? ` · ${pending.length} por receber` : ''}</p></div>
+    <div class="actions">${tab === 'stock' ? '<button class="btn primary" data-act="new-stock">Novo material</button>' : `${S.purchases.length ? '<button class="btn" data-act="csv-compras">Exportar CSV</button>' : ''}<button class="btn primary" data-act="new-purchase">Nova compra</button>`}</div></div>`;
+  if (tab === 'stock'){
+    const list = [...S.stock].sort((a, b) => (stockLow(b) - stockLow(a)) || (a.category || '').localeCompare(b.category || '', 'pt') || (a.name || '').localeCompare(b.name || '', 'pt'));
+    return head + tabs + `<p class="muted" style="margin:0">Valor em stock: <b class="num">${eur(stockVal)}</b> (ao custo médio de compra). As bobines de filamento estão em <a href="#bobines">Bobines</a>.</p>
+      ${list.length ? `<div class="tbl-wrap"><table><thead><tr><th>Material</th><th>Categoria</th><th class="r">Quantidade</th><th class="r">Mínimo</th><th class="r">Custo médio</th><th class="r">Valor</th><th>Local</th><th></th></tr></thead><tbody>
+        ${list.map(x => `<tr class="click" data-act="edit-stock" data-id="${x.id}" tabindex="0"><td><b>${esc(x.name)}</b>${x.notes ? `<br><small class="muted">${esc(x.notes)}</small>` : ''}</td><td>${esc(x.category || '—')}</td><td class="r num">${stockLow(x) ? `<span class="pill ${(+x.qty || 0) <= 0 ? 'bad' : 'warn'}">${qtyTxt(x.qty, x.unit)}</span>` : qtyTxt(x.qty, x.unit)}</td><td class="r num">${+x.min ? qtyTxt(x.min, x.unit) : '—'}</td><td class="r num">${eur(x.avgCost)}/${esc(x.unit || 'un.')}</td><td class="r num">${eur(Math.max(0, +x.qty || 0) * (+x.avgCost || 0))}</td><td>${esc(x.location || '—')}</td>
+          <td class="r" style="white-space:nowrap"><button class="btn ghost sm" data-act="use-stock" data-id="${x.id}">Usar</button></td></tr>`).join('')}
+      </tbody></table></div>` : '<div class="empty">Ainda não há materiais em stock. Ao receber uma compra com linhas "Material", o stock é criado automaticamente.<button class="btn" data-act="new-stock">Adicionar material</button></div>'}`;
+  }
+  const f = st.pFilter;
+  const list = S.purchases.filter(p => !f || (p.status || 'encomendada') === f).sort((a, b) => (b.date || '').localeCompare(a.date || '') || (b.number || '').localeCompare(a.number || ''));
+  const chip = (v, l) => `<button class="chip" data-act="filter" data-k="pFilter" data-v="${v}" aria-pressed="${f === v}">${l}</button>`;
+  const cats = {}; S.purchases.filter(p => (p.date || '').startsWith(yr)).forEach(p => Object.entries(purchaseTotals(p).byCat).forEach(([k, v]) => cats[k] = (cats[k] || 0) + v));
+  const ce = Object.entries(cats).sort((a, b) => b[1] - a[1]), mx = Math.max(1, ...ce.map(x => x[1]));
+  return head + tabs + `
+    ${ce.length ? `<section class="panel"><h2>Gastos por categoria em ${yr}</h2><div class="hbars">${ce.map(([k, v]) => `<div class="hb"><span>${esc(k)}</span><div class="track"><i style="width:${v / mx * 100}%"></i></div><span class="v">${eur(v)}</span></div>`).join('')}</div></section>` : ''}
+    <div class="chips">${chip('', 'Todas')}${chip('encomendada', 'Por receber')}${chip('recebida', 'Recebidas')}</div>
+    ${list.length ? `<div class="tbl-wrap"><table><thead><tr><th>Nº</th><th>Data</th><th>Fornecedor</th><th>Artigos</th><th>Fatura</th><th class="r">Total</th><th>Estado</th></tr></thead><tbody>
+      ${list.map(p => { const [l, c] = PSTAT[p.status || 'encomendada']; return `<tr class="click" data-act="edit-purchase" data-id="${p.id}" tabindex="0"><td class="num">${esc(p.number)}</td><td>${fmtDate(p.date)}</td><td>${esc(p.supplier || '—')}</td><td class="muted">${esc(lineSummary(p) || '—')}</td><td class="mono">${esc(p.invoice || '—')}</td><td class="r num"><b>${eur(purchaseTotals(p).total)}</b></td><td><span class="pill ${c}">${l}</span></td></tr>`; }).join('')}
+    </tbody></table></div>` : `<div class="empty">${S.purchases.length ? 'Nenhuma compra neste filtro.' : 'Ainda não registou compras. Registe aqui as bobines e outros materiais que compra: ao marcar a compra como recebida, as bobines e o stock são criados automaticamente.'}<button class="btn" data-act="new-purchase">Registar compra</button></div>`}`;
+}
+
+/* ----- formulário da compra ----- */
+function purchaseForm(p){
+  const isNew = !p, s = settings();
+  p = p ? cp(p) : {id:uid(), number:nextNumber(S.purchases, 'COMP'), date:today(), supplier:'', invoice:'', status:'encomendada', receivedDate:'', shipping:0, shipSplit:true, notes:'', lines:[], applied:false};
+  const locked = !!p.applied;
+  const mats = Object.keys(s.matPrices).concat('Outro');
+  const catOpts = PCAT.filter(c => c !== 'Filamento').map(c => [c, c]);
+  const stockOpts = [['__novo', '+ Material novo…']].concat([...S.stock].sort((a, b) => a.name.localeCompare(b.name, 'pt')).map(x => [x.id, `${x.name} (${qtyTxt(x.qty, x.unit)})`]));
+  const lineRow = l => {
+    const id = l.id, k = l.kind, X = (n, lab, html, cls = '') => F(`pl-${n}-${id}`, lab, html, cls);
+    const qp = X('q', 'Qtd.', inp(`pl-q-${id}`, l.qty, 'number', 'min="0" step="any"'), 'f-q') + X('p', k === 'bobine' ? 'Preço/bobine (€)' : 'Preço unit. (€)', inp(`pl-p-${id}`, l.price, 'number', 'min="0" step="0.01"'), 'f-p');
+    let body = '';
+    if (k === 'bobine') body = X('mat', 'Material', sel(`pl-mat-${id}`, mats.map(m => [m, m]), l.material)) + X('brand', 'Marca', inp(`pl-brand-${id}`, l.brand)) + X('color', 'Cor', inp(`pl-color-${id}`, l.color, 'text', 'placeholder="ex.: Preto mate"'))
+      + X('hex', 'Amostra', inp(`pl-hex-${id}`, l.hex || '#2B2B2B', 'color', 'style="height:38px;padding:3px"'), 'f-hex') + X('w', 'Peso (g)', inp(`pl-w-${id}`, l.weight || 1000, 'number', 'min="1" step="1"'), 'f-w') + X('d', 'Ø mm', sel(`pl-d-${id}`, [['1.75', '1,75'], ['2.85', '2,85']], l.diameter || '1.75'), 'f-d') + qp;
+    else if (k === 'material') body = X('stock', 'Material em stock', sel(`pl-stock-${id}`, stockOpts, l.stockId && S.stock.some(x => x.id === l.stockId) ? l.stockId : '__novo'), 'f-wide')
+      + `<div class="pl-new" id="pl-new-${id}" ${l.stockId && S.stock.some(x => x.id === l.stockId) ? 'hidden' : ''}>${X('name', 'Nome', inp(`pl-name-${id}`, l.name, 'text', 'placeholder="ex.: Cola em bastão"'))}${X('cat', 'Categoria', sel(`pl-cat-${id}`, catOpts, l.category || 'Consumíveis'))}${X('unit', 'Unidade', sel(`pl-unit-${id}`, UNITS.map(u => [u, u]), l.unit || 'un.'))}</div>` + qp;
+    else body = X('desc', 'Descrição', inp(`pl-desc-${id}`, l.desc, 'text', 'placeholder="ex.: Espátula, serviço, ferramenta"'), 'f-wide') + X('cat', 'Categoria', sel(`pl-cat-${id}`, catOpts, l.category || 'Outros')) + qp;
+    return `<div class="pline" data-id="${id}" data-kind="${k}"><div class="pl-head"><span class="pill ${k === 'bobine' ? 'info' : k === 'material' ? 'ok' : ''}">${LKIND[k]}</span><b class="num pl-tot"></b><button type="button" class="btn ghost sm" data-act="rm-pline" aria-label="Remover linha">✕</button></div><div class="pl-body">${body}</div></div>`;
+  };
+  const lockedLines = () => `<div class="tbl-wrap"><table><thead><tr><th>Tipo</th><th>Artigo</th><th class="r">Qtd.</th><th class="r">Preço unit.</th><th class="r">Custo real/un.</th><th class="r">Total</th></tr></thead><tbody>
+    ${(p.lines || []).map(l => { const t = purchaseTotals(p); return `<tr><td>${LKIND[l.kind]}</td><td>${l.kind === 'bobine' ? `${swatch(l.hex)} ${esc(`${l.material} ${l.color || ''} · ${l.brand || 'sem marca'} · ${num(l.weight)} g`)}` : esc(l.kind === 'material' ? l.name : l.desc)}${l.kind !== 'bobine' ? `<br><small class="muted">${esc(lineCat(l))}</small>` : ''}</td><td class="r num">${l.kind === 'material' ? qtyTxt(l.qty, l.unit) : num(l.qty, 2).replace(/,00$/, '')}</td><td class="r num">${eur(l.price)}</td><td class="r num">${eur(t.unitCost(l))}</td><td class="r num">${eur(lineSub(l))}</td></tr>`; }).join('')}
+  </tbody></table></div>`;
+  const readLines = () => locked ? p.lines : [...document.querySelectorAll('#p-lines .pline')].map(r => {
+    const id = r.dataset.id, k = r.dataset.kind, old = (p.lines || []).find(x => x.id === id) || {};
+    const base = {id, kind:k, qty:numv(`pl-q-${id}`), price:numv(`pl-p-${id}`)};
+    if (k === 'bobine') return {...base, material:val(`pl-mat-${id}`), brand:val(`pl-brand-${id}`).trim(), color:val(`pl-color-${id}`).trim(), hex:val(`pl-hex-${id}`), weight:numv(`pl-w-${id}`) || 1000, diameter:val(`pl-d-${id}`), spoolIds:old.spoolIds || []};
+    if (k === 'material'){ const sid = val(`pl-stock-${id}`), sx = S.stock.find(x => x.id === sid);
+      return sx ? {...base, stockId:sx.id, name:sx.name, category:sx.category, unit:sx.unit} : {...base, stockId:'', name:val(`pl-name-${id}`).trim(), category:val(`pl-cat-${id}`), unit:val(`pl-unit-${id}`)}; }
+    return {...base, desc:val(`pl-desc-${id}`).trim(), category:val(`pl-cat-${id}`)};
+  });
+  const read = () => ({...p, number:val('p-number').trim(), date:val('p-date'), supplier:val('p-supplier').trim(), invoice:val('p-invoice').trim(), shipping:numv('p-ship'), shipSplit:$('#p-split').checked, notes:val('p-notes').trim(), lines:readLines()});
+  purchaseForm.lineRow = lineRow; purchaseForm.read = read;
+  const [sl, sc] = PSTAT[p.status || 'encomendada'];
+  openDlg(isNew ? 'Nova compra' : `Compra ${p.number}`, `<div class="q-grid"><div style="display:flex;flex-direction:column;gap:14px;min-width:0">
+      <div class="row">${F('p-number', 'Número', inp('p-number', p.number))}${F('p-date', 'Data da compra', inp('p-date', p.date, 'date'))}${F('p-supplier', 'Fornecedor', inp('p-supplier', p.supplier, 'text', 'list="p-sup-list" placeholder="ex.: Amazon, 3DJake"') + `<datalist id="p-sup-list">${suppliers().map(x => `<option value="${esc(x)}">`).join('')}</datalist>`)}${F('p-invoice', 'Nº da fatura', inp('p-invoice', p.invoice, 'text', 'placeholder="opcional"'))}</div>
+      <p style="margin:0">Estado: <span class="pill ${sc}">${sl}</span>${p.status === 'recebida' ? ` em ${fmtDate(p.receivedDate)}` : ''}</p>
+      <h3>Artigos</h3>
+      ${locked ? `<p class="ctx">Compra recebida: as bobines e o stock já foram criados. Para mudar os artigos, anule primeiro a receção.</p>${lockedLines()}` : `
+      <div class="items" id="p-lines">${(p.lines || []).map(lineRow).join('')}</div>
+      <div class="empty" id="p-empty" ${(p.lines || []).length ? 'hidden' : ''}>Adicione as bobines, materiais ou outras despesas desta compra.</div>
+      <div class="actions"><button type="button" class="btn sm" data-act="add-pline" data-kind="bobine">+ Bobine</button><button type="button" class="btn sm" data-act="add-pline" data-kind="material">+ Material</button><button type="button" class="btn sm" data-act="add-pline" data-kind="despesa">+ Outra despesa</button></div>`}
+      <div class="row">${F('p-ship', 'Portes de envio (€)', inp('p-ship', p.shipping, 'number', `min="0" step="0.01" ${locked ? 'disabled' : ''}`))}<label class="check" style="align-self:end;padding-bottom:8px"><input type="checkbox" id="p-split" ${p.shipSplit !== false ? 'checked' : ''} ${locked ? 'disabled' : ''}> Somar os portes ao custo das bobines e materiais</label></div>
+      ${F('p-notes', 'Notas', `<textarea id="p-notes">${esc(p.notes)}</textarea>`)}
+      <p class="muted" style="margin:0">Indique os preços como os pagou (com IVA). Ao marcar a compra como recebida, as bobines aparecem em Bobines com o custo real (incluindo a parte dos portes) e os materiais entram no stock.</p>
+    </div><aside class="sum" id="p-sum"></aside></div>`,
+  {wide:true, extra:`<div class="actions">${isNew ? '' : `<button type="button" class="btn danger" data-act="del" data-col="purchases" data-id="${p.id}">Eliminar</button>`}${locked ? `<button type="button" class="btn" data-act="purchase-unreceive">Anular receção</button>` : `<button type="button" class="btn" data-act="purchase-receive">Guardar e marcar como recebida</button>`}</div>`,
+   input: () => {
+    if (!locked) document.querySelectorAll('#p-lines .pline').forEach(r => {
+      const id = r.dataset.id; r.querySelector('.pl-tot').textContent = eur(numv(`pl-q-${id}`) * numv(`pl-p-${id}`));
+      const sx = document.getElementById(`pl-stock-${id}`); if (sx) $(`#pl-new-${id}`).hidden = sx.value !== '__novo';
+    });
+    if (!locked) $('#p-empty').hidden = !!document.querySelector('#p-lines .pline');
+    const t = purchaseTotals(read()), L = (l, v, cls = '') => `<div class="l ${cls}"><span>${l}</span><span>${v}</span></div>`;
+    $('#p-sum').innerHTML = `<div class="eyebrow">Total da compra</div>${Object.entries(t.byCat).sort((a, b) => b[1] - a[1]).map(([k, v]) => L(k, eur(v), 'sub')).join('')}<hr>${L('Artigos', eur(t.sub))}${L('Portes', eur(t.ship))}<hr>${L('Total', eur(t.total), 'total')}`;
+   },
+   handler: async () => { const n = validPurchase(read()); if (!n) return; await put('purchases', n); closeDlg(); toast('Compra guardada.'); }});
+}
+function validPurchase(n){
+  if (!n.number){ toast('Indique o número da compra.'); return null; }
+  if (!n.lines.length){ toast('Adicione pelo menos um artigo.'); return null; }
+  for (const l of n.lines){
+    if (!(+l.qty > 0)){ toast('Todas as linhas precisam de uma quantidade maior que zero.'); return null; }
+    if (l.kind === 'bobine' && !l.color){ toast('Indique a cor de cada bobine.'); return null; }
+    if (l.kind === 'bobine' && (!Number.isInteger(+l.qty) || +l.qty > 100)){ toast('A quantidade de bobines tem de ser um número inteiro (até 100 por linha).'); return null; }
+    if (l.kind === 'material' && !l.name){ toast('Indique o nome de cada material novo.'); return null; }
+    if (l.kind === 'despesa' && !l.desc){ toast('Descreva cada despesa.'); return null; }
+  }
+  return n;
+}
+// receber: cria as bobines e soma ao stock (uma única vez)
+async function receivePurchase(p){
+  p = cp(p); if (p.applied) return p;
+  const t = purchaseTotals(p), when = p.receivedDate || today();
+  for (const l of p.lines){
+    const uc = r2(t.unitCost(l));
+    if (l.kind === 'bobine'){
+      l.spoolIds = [];
+      for (let i = 0; i < Math.round(+l.qty); i++){
+        const sp = {id:uid(), material:l.material, brand:l.brand || '', color:l.color, hex:l.hex || '#888888', diameter:l.diameter || '1.75', weight:+l.weight || 1000, remaining:+l.weight || 1000, tare:200, price:uc, bought:when, location:'', purchaseId:p.id, purchaseNumber:p.number, supplier:p.supplier || ''};
+        await put('spools', sp); l.spoolIds.push(sp.id);
+      }
+    } else if (l.kind === 'material'){
+      let x = l.stockId && S.stock.find(s => s.id === l.stockId);
+      if (x){ x = cp(x); l.before = {qty:+x.qty || 0, avg:+x.avgCost || 0}; l.created = false; const q0 = Math.max(0, +x.qty || 0), q1 = q0 + (+l.qty); x.avgCost = r2(q1 > 0 ? (q0 * (+x.avgCost || 0) + (+l.qty) * uc) / q1 : uc); x.qty = r2((+x.qty || 0) + (+l.qty)); }
+      else { x = {id:uid(), name:l.name, category:l.category || 'Outros', unit:l.unit || 'un.', qty:r2(+l.qty), min:0, avgCost:uc, location:'', notes:''}; l.stockId = x.id; l.created = true; l.before = null; }
+      x.lastPurchase = p.number; await put('stock', x);
+    }
+  }
+  Object.assign(p, {applied:true, status:'recebida', receivedDate:when});
+  await put('purchases', p);
+  return p;
+}
+async function unreceivePurchase(p){
+  p = cp(p); if (!p.applied) return p;
+  const used = [];
+  for (const l of p.lines.filter(l => l.kind === 'bobine')) for (const id of l.spoolIds || []){
+    const sp = S.spools.find(s => s.id === id); if (!sp) continue;
+    if (S.jobs.some(j => usesOf(j).some(u => u.spoolId === id)) || spoolRemain(sp) < (+sp.weight || 0)) used.push(spoolLabel(sp));
+  }
+  if (used.length){ toast(`Não é possível anular: já foi gasto filamento ${used.length === 1 ? 'da bobine' : 'das bobines'} ${[...new Set(used)].join(', ')}.`); return null; }
+  const t = purchaseTotals(p);
+  for (const l of p.lines){
+    if (l.kind === 'bobine'){ for (const id of l.spoolIds || []) if (S.spools.some(s => s.id === id)) await del('spools', id); l.spoolIds = []; }
+    else if (l.kind === 'material' && l.stockId){
+      const x0 = S.stock.find(s => s.id === l.stockId); if (!x0) continue;
+      const x = cp(x0), uc = t.unitCost(l), q1 = r2((+x.qty || 0) - (+l.qty));
+      // sem movimentos desde a receção: volta exatamente ao que estava
+      if (l.created && Math.abs((+x.qty || 0) - (+l.qty)) < 1e-9){ await del('stock', x.id); l.stockId = ''; l.created = false; continue; }
+      if (l.before && Math.abs((+x.qty || 0) - (l.before.qty + (+l.qty))) < 1e-9){ x.qty = l.before.qty; x.avgCost = l.before.avg; }
+      else { x.avgCost = r2(q1 > 0 ? Math.max(0, ((+x.qty || 0) * (+x.avgCost || 0) - (+l.qty) * uc) / q1) : (+x.avgCost || 0)); x.qty = Math.max(0, q1); }
+      l.before = null; await put('stock', x);
+    }
+  }
+  Object.assign(p, {applied:false, status:'encomendada', receivedDate:''});
+  await put('purchases', p);
+  return p;
+}
+
+/* ----- stock de materiais ----- */
+function stockForm(x){
+  const isNew = !x; x = x ? cp(x) : {id:uid(), name:'', category:'Consumíveis', unit:'un.', qty:0, min:0, avgCost:0, location:'', notes:''};
+  const hist = isNew ? [] : S.purchases.filter(p => (p.lines || []).some(l => l.kind === 'material' && l.stockId === x.id)).sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+  openDlg(isNew ? 'Novo material' : x.name, `
+    <div class="row">${F('st-name', 'Nome', inp('st-name', x.name, 'text', 'placeholder="ex.: Cola em bastão, Bico 0,4 mm, Caixa 20×15"'))}${F('st-cat', 'Categoria', sel('st-cat', PCAT.filter(c => c !== 'Filamento').map(c => [c, c]), x.category))}${F('st-unit', 'Unidade', sel('st-unit', UNITS.map(u => [u, u]), x.unit))}</div>
+    <div class="row">${F('st-qty', 'Quantidade em stock', inp('st-qty', x.qty, 'number', 'step="any"'))}${F('st-min', 'Avisar quando ficar abaixo de', inp('st-min', x.min, 'number', 'min="0" step="any"'))}${F('st-cost', 'Custo médio por unidade (€)', inp('st-cost', x.avgCost, 'number', 'min="0" step="0.01"'))}${F('st-loc', 'Localização', inp('st-loc', x.location, 'text', 'placeholder="ex.: Gaveta 2"'))}</div>
+    ${F('st-notes', 'Notas', `<textarea id="st-notes">${esc(x.notes)}</textarea>`)}
+    ${hist.length ? `<h3>Compras deste material</h3><ul class="alerts">${hist.map(p => { const l = p.lines.find(l => l.kind === 'material' && l.stockId === x.id); return `<li><span class="pill ${PSTAT[p.status || 'encomendada'][1]}">${PSTAT[p.status || 'encomendada'][0]}</span><div class="txt">${esc(p.number)} · ${esc(p.supplier || 'sem fornecedor')}<small>${fmtDate(p.date)} · ${qtyTxt(l.qty, l.unit)} a ${eur(l.price)}</small></div></li>`; }).join('')}</ul>` : ''}`,
+  {extra: isNew ? '' : `<div class="actions"><button type="button" class="btn danger" data-act="del" data-col="stock" data-id="${x.id}">Eliminar</button></div>`,
+   handler: async () => {
+    if (!val('st-name').trim()){ toast('Indique o nome do material.'); return; }
+    Object.assign(x, {name:val('st-name').trim(), category:val('st-cat'), unit:val('st-unit'), qty:numv('st-qty'), min:numv('st-min'), avgCost:numv('st-cost'), location:val('st-loc').trim(), notes:val('st-notes').trim()});
+    await put('stock', x); closeDlg(); toast(isNew ? 'Material adicionado.' : 'Material atualizado.');
+  }});
+}
+function useStockForm(x){
+  x = cp(x);
+  openDlg(`Usar ${x.name}`, `<p style="margin:0">Em stock: <b class="num">${qtyTxt(x.qty, x.unit)}</b></p>
+    <div class="row">${F('su-q', `Quantidade usada (${esc(x.unit || 'un.')})`, inp('su-q', 1, 'number', 'min="0" step="any"'))}</div>
+    <p class="muted" id="su-out" style="margin:0"></p>`,
+  {submit:'Descontar do stock', input: () => { $('#su-out').textContent = `Fica com ${qtyTxt(r2((+x.qty || 0) - numv('su-q')), x.unit)}.`; },
+   handler: async () => { const q = numv('su-q'); if (!(q > 0)){ toast('Indique a quantidade usada.'); return; } x.qty = r2((+x.qty || 0) - q); await put('stock', x); closeDlg(); toast(`${x.name}: ${qtyTxt(x.qty, x.unit)} em stock.`); }});
+}
+
 /* ---------- diálogo ---------- */
 let onSubmit = null, onInput = null, onGcode = null;
 function openDlg(title, body, {wide = false, submit = 'Guardar', extra = '', handler, input} = {}){
@@ -1561,6 +1760,11 @@ async function loadSample(){
       withFils({id:pc, name:'Porta-chaves bicolor (exemplo)', ref:'PC-02', clientId:'', hours:0.8, laborH:0.05, notes:'Troca de cor com AMS', src:null, thumb:''}, [{mat:'m:PLA', grams:6.5, hex:'#232323'}, {mat:'m:PLA', grams:3.2, hex:'#F4F4F2'}, {mat:'m:PETG', grams:1.1, hex:'#2F6FD0'}])],
     jobs:[{id:uid(), date:d(1), name:'Suportes de parede x4 (exemplo)', clientId:c2, client:'Loja Ferragens (exemplo)', partId:pb, printerId:P1, spoolId:s1, grams:112, hours:5.5, result:'sucesso', reason:'', quoteId:'', notes:''},
       {id:uid(), date:d(3), name:'Caixa eletrónica (exemplo)', clientId:'', client:'', partId:'', printerId:P2, spoolId:s2, grams:86, hours:4.2, result:'falha', reason:'Warping', quoteId:'', notes:'Repetir com brim'}],
+    stock:[{id:'stk-cola', name:'Cola em bastão (exemplo)', category:'Consumíveis', unit:'un.', qty:1, min:2, avgCost:3.2, location:'Gaveta 1', notes:''},
+      {id:'stk-bico', name:'Bico latão 0,4 mm (exemplo)', category:'Peças e manutenção', unit:'un.', qty:4, min:1, avgCost:2.1, location:'Gaveta 2', notes:''},
+      {id:'stk-caixa', name:'Caixa cartão 20×15×10 (exemplo)', category:'Embalagem', unit:'un.', qty:35, min:10, avgCost:0.45, location:'Prateleira 3', notes:''}],
+    purchases:[{id:uid(), number:`COMP-${today().slice(0, 4)}-001`, date:d(8), supplier:'3DJake (exemplo)', invoice:'FT 2026/1234', status:'encomendada', receivedDate:'', shipping:4.99, shipSplit:true, notes:'', applied:false,
+      lines:[{id:uid(), kind:'bobine', material:'PETG', brand:'Prusament', color:'Laranja', hex:'#F07A1A', weight:1000, diameter:'1.75', qty:2, price:29.99, spoolIds:[]}, {id:uid(), kind:'material', stockId:'stk-cola', name:'Cola em bastão (exemplo)', category:'Consumíveis', unit:'un.', qty:3, price:3.1}]}],
     maint:[{id:uid(), printerId:P1, taskId:'', task:'Limpeza da base e bico', date:d(5), hoursAt:820, cost:0, notes:'Exemplo'}],
     quotes:[{id:uid(), number:`ORC-${today().slice(0, 4)}-001`, clientId:c1, client:'Atelier Silva (exemplo)', date:d(2), validity:15, status:'enviado', printerId:P1, items:[{id:uid(), partId:pa, desc:'Engrenagem helicoidal (exemplo)', ref:'ENG-01', mat:'s:' + s3, grams:48, hours:2.3, laborH:0.1, thumb:'', qty:6, disc:5}], laborRate:15, laborH:0, extras:0, failure:10, margin:40, vat:true, notes:''}]
   };
@@ -1606,6 +1810,29 @@ document.addEventListener('click', async e => {
       case 'compact': await compactQueue(id); break;
       case 'logout': await signOut(); break;
       case 'team-invite': case 'team-uninvite': case 'team-rm': await teamAction(a, id); break;
+      case 'new-purchase': purchaseForm(); break;
+      case 'edit-purchase': purchaseForm(find('purchases')); break;
+      case 'add-pline': { const k = b.dataset.kind, s0 = settings(); const l = k === 'bobine' ? {id:uid(), kind:k, material:Object.keys(s0.matPrices)[0] || 'PLA', brand:'', color:'', hex:'#2B2B2B', weight:1000, diameter:'1.75', qty:1, price:20} : k === 'material' ? {id:uid(), kind:k, stockId:'', name:'', category:'Consumíveis', unit:'un.', qty:1, price:0} : {id:uid(), kind:k, desc:'', category:'Outros', qty:1, price:0};
+        const w = document.createElement('div'); w.innerHTML = purchaseForm.lineRow(l); $('#p-lines').append(w.firstElementChild); onInput && onInput(); const f = $('#p-lines').lastElementChild.querySelector('input:not([type=color]),select'); if (f) f.focus(); break; }
+      case 'rm-pline': b.closest('.pline').remove(); onInput && onInput(); break;
+      case 'purchase-receive': {
+        const n = validPurchase(purchaseForm.read()); if (!n) break;
+        await put('purchases', n); const r = await receivePurchase(n); closeDlg();
+        const nb = r.lines.filter(l => l.kind === 'bobine').reduce((a, l) => a + Math.round(+l.qty), 0), nm = r.lines.filter(l => l.kind === 'material').length;
+        toast(`Compra recebida${nb ? ` · ${nb} ${nb === 1 ? 'bobine criada' : 'bobines criadas'}` : ''}${nm ? ` · ${nm} ${nm === 1 ? 'material' : 'materiais'} no stock` : ''}.`); break;
+      }
+      case 'purchase-unreceive': { const p0 = S.purchases.find(x => x.id === purchaseForm.read().id); if (!p0) break; const r = await unreceivePurchase(p0); if (r){ toast('Receção anulada: as bobines e o stock desta compra foram retirados.'); purchaseForm(r); } break; }
+      case 'csv-compras': {
+        const q = v => `"${String(v ?? '').replace(/"/g, '""')}"`, n2 = v => String(r2(v)).replace('.', ',');
+        const rows = ['Compra;Data;Fornecedor;Fatura;Estado;Tipo;Artigo;Categoria;Quantidade;Unidade;Preço unitário;Custo real unitário;Total da linha'];
+        [...S.purchases].sort((a, b) => (a.date || '').localeCompare(b.date || '')).forEach(p => { const t = purchaseTotals(p);
+          (p.lines || []).forEach(l => rows.push([p.number, p.date, p.supplier, p.invoice, PSTAT[p.status || 'encomendada'][0], LKIND[l.kind], l.kind === 'bobine' ? `${l.material} ${l.color} ${l.brand || ''} ${l.weight} g`.trim() : (l.name || l.desc), lineCat(l), n2(l.qty), l.kind === 'material' ? l.unit : (l.kind === 'bobine' ? 'bobine' : 'un.'), n2(l.price), n2(t.unitCost(l)), n2(lineSub(l))].map(q).join(';')));
+          if (+p.shipping) rows.push([p.number, p.date, p.supplier, p.invoice, PSTAT[p.status || 'encomendada'][0], 'Portes', 'Portes de envio', 'Portes', '1', '', n2(p.shipping), '', n2(p.shipping)].map(q).join(';')); });
+        await downloads.save({filename:`compras-${today()}.csv`, data:'\ufeff' + rows.join('\r\n')}); break;
+      }
+      case 'new-stock': stockForm(); break;
+      case 'edit-stock': stockForm(find('stock')); break;
+      case 'use-stock': useStockForm(find('stock')); break;
       case 'new-client': clientForm(); break;
       case 'edit-client': clientForm(find('clients')); break;
       case 'quote-client': quoteForm(null, {clientId:id}); break;
@@ -1639,7 +1866,8 @@ document.addEventListener('click', async e => {
       }
       case 'del': {
         const col = b.dataset.col, item = find(col);
-        const labels = {spools:'esta bobine', printers:'esta impressora', maint:'este registo de manutenção', jobs:'esta impressão', quotes:'este orçamento', clients:'este cliente', parts:'esta peça do catálogo', orders:'esta encomenda', plan:'esta impressão planeada'};
+        if (col === 'purchases' && item && item.applied){ toast('Esta compra já foi recebida. Anule primeiro a receção para retirar as bobines e o stock.'); break; }
+        const labels = {spools:'esta bobine', printers:'esta impressora', maint:'este registo de manutenção', jobs:'esta impressão', quotes:'este orçamento', clients:'este cliente', parts:'esta peça do catálogo', orders:'esta encomenda', plan:'esta impressão planeada', purchases:'esta compra', stock:'este material do stock'};
         const extra = col === 'jobs' ? ' O filamento volta a ser somado à bobine e as horas são retiradas da impressora.' : col === 'clients' ? ' Os orçamentos e peças deste cliente mantêm-se, mas deixam de estar ligados à ficha.' : col === 'parts' ? ' Os orçamentos que já a incluem não mudam.' : col === 'orders' ? ' As impressões ainda por fazer são retiradas do planeamento; as já registadas mantêm-se.' : '';
         confirmDlg('Eliminar', `Quer eliminar ${labels[col]}?${extra} Esta ação não pode ser desfeita.`, 'Eliminar', async () => {
           if (col === 'jobs' && item){ await applyJob(item, null); const pl = item.planId && S.plan.find(x => x.id === item.planId); if (pl){ const c = cp(pl); c.status = 'planeada'; delete c.jobId; await put('plan', c); } }
