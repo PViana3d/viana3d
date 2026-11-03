@@ -202,6 +202,9 @@ dialog::backdrop{background:rgba(10,16,14,.5)}
 .usel{display:flex;gap:5px;align-items:center;white-space:nowrap}
 .usel + .usel{margin-top:2px}
 .qitem,.plrow{grid-auto-flow:row dense}
+/* manutenção */
+.task-row{grid-template-columns:minmax(0,1.6fr) 90px 170px minmax(0,1fr) 36px;align-items:end}
+@media (max-width:700px){ .task-row{grid-template-columns:1fr 1fr} .task-row > .field:first-child{grid-column:1 / -1} }
 /* compras */
 .pline{border:1px solid var(--line);border-radius:var(--r);padding:10px 12px;display:flex;flex-direction:column;gap:8px;background:var(--surface)}
 .pl-head{display:flex;align-items:center;gap:10px}

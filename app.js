@@ -21,7 +21,7 @@ const DEF = {company:'Oficina 3D', kwh:0.16, labor:15, margin:40, failure:10, va
 const COLS = ['spools','printers','maint','jobs','quotes','clients','parts','orders','plan','purchases','stock'];
 const S = {spools:[], printers:[], maint:[], jobs:[], quotes:[], clients:[], parts:[], orders:[], plan:[], purchases:[], stock:[], settings:cp(DEF)};
 const QSTATUS = {rascunho:['Rascunho',''], enviado:['Enviado','info'], aceite:['Aceite','ok'], recusado:['Recusado','bad']};
-const DEFAULT_TASKS = [['Limpeza da base e bico', 50], ['Lubrificação dos eixos', 200], ['Verificar tensão das correias', 300], ['Troca de bico', 500]];
+const DEFAULT_TASKS = [['Limpeza da base e bico', 50, 'h'], ['Lubrificação dos eixos', 200, 'h'], ['Verificar tensão das correias', 300, 'h'], ['Troca de bico', 500, 'h'], ['Limpeza geral e aperto de parafusos', 30, 'd']];
 
 let loaded = false, writeBlocked = false;
 
@@ -234,10 +234,17 @@ function spoolStatus(s){
   if (r <= low) return ['Stock baixo','warn'];
   return ['Disponível','ok'];
 }
+// tarefa de manutenção: a cada X horas de impressão (unit 'h') ou a cada X dias (unit 'd')
+const daysBetween = (a, b) => Math.round((new Date(b + 'T12:00') - new Date(a + 'T12:00')) / 864e5);
 function taskState(p, t){
-  const since = (+p.hours || 0) - (+t.last || 0), pct = t.interval ? since / t.interval : 0;
-  return {since, pct, cls: pct >= 1 ? 'bad' : pct >= .85 ? 'warn' : ''};
+  const days = t.unit === 'd';
+  const since = days ? (t.lastDate ? daysBetween(t.lastDate, today()) : 0) : (+p.hours || 0) - (+t.last || 0);
+  const pct = t.interval ? since / t.interval : 0;
+  const u = days ? 'dias' : 'h', left = (+t.interval || 0) - since;
+  return {since, pct, days, u, left, due: days && t.lastDate ? addDaysStr(t.lastDate, +t.interval || 0) : '',
+    cls: pct >= 1 ? 'bad' : (days ? left <= Math.max(2, Math.ceil(t.interval * .15)) : pct >= .85) ? 'warn' : ''};
 }
+const taskEvery = t => `a cada ${num(t.interval)} ${t.unit === 'd' ? (+t.interval === 1 ? 'dia' : 'dias') : 'h'}`;
 function matEurKg(code){
   const s = settings();
   if (!code) return 0;
@@ -315,7 +322,7 @@ function stats(jobs){
 function alerts(){
   const out = [];
   S.spools.forEach(s => { const [t, c] = spoolStatus(s); if (c !== 'ok') out.push({cls:c, title:`${spoolLabel(s)} (${s.brand || 'sem marca'})`, sub:`${t}: restam ${num(spoolRemain(s))} g`, href:'#bobines'}); });
-  S.printers.forEach(p => (p.tasks || []).forEach(t => { const st = taskState(p, t); if (st.cls) out.push({cls:st.cls, title:`${p.name}: ${t.name}`, sub: st.pct >= 1 ? `Em atraso ${num(st.since - t.interval)} h` : `Faltam ${num(t.interval - st.since)} h`, href:'#manutencao'}); }));
+  S.printers.forEach(p => (p.tasks || []).forEach(t => { const st = taskState(p, t); if (st.cls) out.push({cls:st.cls, title:`${p.name}: ${t.name}`, sub: (st.pct >= 1 ? `Em atraso ${num(-st.left)} ${st.u}` : `Faltam ${num(st.left)} ${st.u}`) + (st.due ? ` (${st.pct >= 1 ? 'era' : 'é'} a ${fmtDate(st.due)})` : ''), href:'#manutencao'}); }));
   S.quotes.filter(q => q.status === 'enviado').forEach(q => out.push({cls:'info', title:`Orçamento ${q.number} · ${clientName(q) || 'sem cliente'}`, sub:`Enviado a ${fmtDate(q.date)}, a aguardar resposta`, href:'#orcamentos'}));
   S.orders.forEach(o => { const s = orderState(o); if (!s.open) return; const dl = o.due ? businessDaysBetween(today(), o.due) : 99;
     if (s.late) out.push({cls:'bad', title:`Encomenda ${o.number} · ${clientName(o) || 'sem cliente'}`, sub:`Prazo ultrapassado (${fmtDate(o.due)}) · ${s.done}/${s.total} unidades feitas`, href:'#encomendas'});
@@ -441,7 +448,7 @@ function printerCard(p){
   return `<article class="printer">
     <div class="printer-h"><div><h3>${esc(p.name)}</h3><small>${esc(p.model || '')}${p.watts ? ' · ' + num(p.watts) + ' W' : ''}</small></div><span class="pill ${sCls}">${esc(sTxt)}</span></div>
     <div class="odo">${num(p.hours, 1)} <small>horas de impressão</small></div>
-    <div class="tasks">${(p.tasks || []).map(t => { const s = taskState(p, t); return `<div class="task"><span class="nm">${esc(t.name)}</span><span class="hh">${num(Math.max(0, s.since))} / ${num(t.interval)} h</span><div class="bar"><i class="${s.cls}" style="width:${Math.min(100, Math.max(0, s.pct * 100))}%"></i></div></div>`; }).join('') || '<span class="muted">Sem plano de manutenção.</span>'}</div>
+    <div class="tasks">${(p.tasks || []).map(t => { const s = taskState(p, t); return `<div class="task"><span class="nm">${esc(t.name)}</span><span class="hh">${num(Math.max(0, s.since))} / ${num(t.interval)} ${s.u}${s.due ? ` · ${new Date(s.due + 'T12:00').toLocaleDateString('pt-PT', {day:'2-digit', month:'2-digit'})}` : ''}</span><div class="bar"><i class="${s.cls}" style="width:${Math.min(100, Math.max(0, s.pct * 100))}%"></i></div></div>`; }).join('') || '<span class="muted">Sem plano de manutenção.</span>'}</div>
     <div class="card-foot"><button class="btn ghost sm" data-act="new-maint" data-id="${p.id}">Registar manutenção</button><button class="btn ghost sm" data-act="edit-printer" data-id="${p.id}">Editar</button><button class="btn ghost sm danger" data-act="del" data-col="printers" data-id="${p.id}">Eliminar</button></div>
   </article>`;
 }
@@ -1240,8 +1247,11 @@ function weighForm(s){
 }
 
 function printerForm(p){
-  const isNew = !p; p = p ? cp(p) : {id:uid(), name:'', model:'', watts:120, price:400, life:5000, hours:0, status:'ativa', tasks: DEFAULT_TASKS.map(([n, i]) => ({id:uid(), name:n, interval:i, last:0}))};
-  const taskRow = t => `<div class="row task-row" data-id="${t.id}" data-last="${t.last || 0}" style="grid-template-columns:minmax(0,1fr) 110px 32px;align-items:end">${F('t-n-' + t.id, 'Tarefa', inp('t-n-' + t.id, t.name))}${F('t-i-' + t.id, 'A cada (h)', inp('t-i-' + t.id, t.interval, 'number', 'min="1" step="1"'))}<button type="button" class="btn ghost" data-act="rm-row" aria-label="Remover tarefa">✕</button></div>`;
+  const isNew = !p; p = p ? cp(p) : {id:uid(), name:'', model:'', watts:120, price:400, life:5000, hours:0, status:'ativa', tasks: DEFAULT_TASKS.map(([n, i, u]) => ({id:uid(), name:n, interval:i, unit:u, last:0, lastDate:today()}))};
+  const taskRow = t => { const d = t.unit === 'd'; return `<div class="row task-row" data-id="${t.id}">${F('t-n-' + t.id, 'Tarefa', inp('t-n-' + t.id, t.name))}${F('t-i-' + t.id, 'A cada', inp('t-i-' + t.id, t.interval, 'number', 'min="1" step="1"'))}${F('t-u-' + t.id, 'Unidade', sel('t-u-' + t.id, [['h', 'horas de impressão'], ['d', 'dias']], d ? 'd' : 'h'))}
+    <div class="field" data-tl="h" ${d ? 'hidden' : ''}><label for="t-lh-${t.id}">Última vez (horas da máquina)</label>${inp('t-lh-' + t.id, r2(+t.last || 0), 'number', 'min="0" step="0.1"')}</div>
+    <div class="field" data-tl="d" ${d ? '' : 'hidden'}><label for="t-ld-${t.id}">Última vez (data)</label>${inp('t-ld-' + t.id, t.lastDate || today(), 'date')}</div>
+    <button type="button" class="btn ghost" data-act="rm-row" aria-label="Remover tarefa">✕</button></div>`; };
   openDlg(isNew ? 'Nova impressora' : 'Editar impressora', `
     <div class="row">${F('p-name', 'Nome', inp('p-name', p.name, 'text', 'placeholder="ex.: Bambu P1S nº1"'))}${F('p-model', 'Modelo', inp('p-model', p.model))}${F('p-status', 'Estado', sel('p-status', [['ativa', 'Ativa'], ['manutencao', 'Em manutenção'], ['parada', 'Parada']], p.status))}</div>
     <div class="row">${F('p-watts', 'Consumo médio (W)', inp('p-watts', p.watts, 'number', 'min="0" step="1"'))}${F('p-price', 'Preço de compra (€)', inp('p-price', p.price, 'number', 'min="0" step="1"'))}${F('p-life', 'Vida útil estimada (h)', inp('p-life', p.life, 'number', 'min="1" step="100"'))}${F('p-hours', 'Horas acumuladas', inp('p-hours', p.hours, 'number', 'min="0" step="0.1"'))}</div>
@@ -1249,11 +1259,12 @@ function printerForm(p){
     <h3>Plano de manutenção</h3>
     <div id="task-rows" class="items">${(p.tasks || []).map(taskRow).join('')}</div>
     <div><button type="button" class="btn sm" data-act="add-task">Adicionar tarefa</button></div>`,
-  {input: () => { const l = numv('p-life'); $('#p-wear').textContent = l ? eur(numv('p-price') / l) : '—'; },
+  {wide:true, input: () => { const l = numv('p-life'); $('#p-wear').textContent = l ? eur(numv('p-price') / l) : '—';
+    document.querySelectorAll('.task-row').forEach(r => { const u = val('t-u-' + r.dataset.id); r.querySelectorAll('[data-tl]').forEach(f => f.hidden = f.dataset.tl !== u); }); },
    handler: async () => {
     if (!val('p-name').trim()){ toast('Indique o nome da impressora.'); return; }
     Object.assign(p, {name:val('p-name').trim(), model:val('p-model').trim(), status:val('p-status'), watts:numv('p-watts'), price:numv('p-price'), life:numv('p-life'), hours:numv('p-hours')});
-    p.tasks = [...document.querySelectorAll('.task-row')].map(r => ({id:r.dataset.id, name:val('t-n-' + r.dataset.id).trim(), interval:numv('t-i-' + r.dataset.id), last:+r.dataset.last || 0})).filter(t => t.name && t.interval);
+    p.tasks = [...document.querySelectorAll('.task-row')].map(r => { const id = r.dataset.id; return {id, name:val('t-n-' + id).trim(), interval:Math.round(numv('t-i-' + id)), unit:val('t-u-' + id) === 'd' ? 'd' : 'h', last:numv('t-lh-' + id), lastDate:val('t-ld-' + id) || today()}; }).filter(t => t.name && t.interval);
     await put('printers', p); closeDlg(); toast(isNew ? 'Impressora adicionada.' : 'Impressora atualizada.');
   }});
   printerForm.taskRow = taskRow;
@@ -1278,7 +1289,7 @@ function maintForm(printerId){
     if (!name){ toast('Descreva a intervenção.'); return; }
     const hoursAt = numv('m-hours');
     await put('maint', {id:uid(), printerId:p.id, taskId:t ? t.id : '', task:name, date:val('m-date'), hoursAt, cost:numv('m-cost'), notes:val('m-notes').trim()});
-    if (t && $('#m-reset').checked){ t.last = hoursAt; await put('printers', p); }
+    if (t && $('#m-reset').checked){ t.last = hoursAt; t.lastDate = val('m-date') || today(); await put('printers', p); }
     closeDlg(); toast('Manutenção registada.');
   }});
   maintForm.taskOpts = taskOpts;
@@ -1745,11 +1756,11 @@ function quoteText(q){
 /* ---------- dados de exemplo (só ao clicar) ---------- */
 async function loadSample(){
   const P1 = uid(), P2 = uid(), s1 = uid(), s2 = uid(), s3 = uid(), s4 = uid(), c1 = uid(), c2 = uid(), pa = uid(), pb = uid(), pc = uid();
-  const t = (n, i, l) => ({id:uid(), name:n, interval:i, last:l});
+  const t = (n, i, l, u = 'h', ld = d(0)) => ({id:uid(), name:n, interval:i, unit:u, last:l, lastDate:ld});
   const d = n => { const x = new Date(); x.setDate(x.getDate() - n); return x.toISOString().slice(0, 10); };
   const rows = {
-    printers:[{id:P1, name:'P1S nº1 (exemplo)', model:'Bambu Lab P1S', watts:110, price:650, life:6000, hours:842, status:'ativa', tasks:[t('Limpeza da base e bico', 50, 820), t('Lubrificação dos eixos', 200, 610), t('Verificar tensão das correias', 300, 600), t('Troca de bico', 500, 400)]},
-      {id:P2, name:'Ender 3 V3 (exemplo)', model:'Creality Ender 3 V3', watts:150, price:300, life:4000, hours:1290, status:'ativa', tasks:[t('Limpeza da base e bico', 50, 1270), t('Lubrificação dos eixos', 200, 1100), t('Verificar tensão das correias', 300, 1000), t('Troca de bico', 500, 1000)]}],
+    printers:[{id:P1, name:'P1S nº1 (exemplo)', model:'Bambu Lab P1S', watts:110, price:650, life:6000, hours:842, status:'ativa', tasks:[t('Limpeza da base e bico', 50, 820), t('Lubrificação dos eixos', 200, 610), t('Verificar tensão das correias', 300, 600), t('Troca de bico', 500, 400), t('Limpeza geral e aperto de parafusos', 30, 0, 'd', d(27))]},
+      {id:P2, name:'Ender 3 V3 (exemplo)', model:'Creality Ender 3 V3', watts:150, price:300, life:4000, hours:1290, status:'ativa', tasks:[t('Limpeza da base e bico', 50, 1270), t('Lubrificação dos eixos', 200, 1100), t('Verificar tensão das correias', 300, 1000), t('Troca de bico', 500, 1000), t('Trocar sílica da caixa seca', 14, 0, 'd', d(17))]}],
     spools:[{id:s1, material:'PLA', color:'Preto mate (exemplo)', hex:'#232323', brand:'eSun', diameter:'1.75', weight:1000, remaining:640, tare:220, price:19.9, bought:d(20), location:'Caixa seca A'},
       {id:s2, material:'PETG', color:'Azul translúcido (exemplo)', hex:'#2F6FD0', brand:'Prusament', diameter:'1.75', weight:1000, remaining:120, tare:190, price:29.99, bought:d(45), location:'Caixa seca A'},
       {id:s3, material:'PLA', color:'Branco (exemplo)', hex:'#F4F4F2', brand:'Sunlu', diameter:'1.75', weight:1000, remaining:910, tare:160, price:17.5, bought:d(6), location:'Prateleira 2'},
@@ -1792,7 +1803,7 @@ document.addEventListener('click', async e => {
       case 'new-quote': quoteForm(); break;
       case 'edit-quote': quoteForm(find('quotes')); break;
       case 'sample': await loadSample(); break;
-      case 'add-task': { const r = document.createElement('div'); r.innerHTML = printerForm.taskRow({id:uid(), name:'', interval:100, last:numv('p-hours')}); $('#task-rows').append(r.firstElementChild); break; }
+      case 'add-task': { const r = document.createElement('div'); r.innerHTML = printerForm.taskRow({id:uid(), name:'', interval:100, unit:'h', last:numv('p-hours'), lastDate:today()}); $('#task-rows').append(r.firstElementChild); break; }
       case 'add-part': { const pid = val('q-addpart'); if (!pid){ toast('Escolha uma peça do catálogo.'); break; } quoteForm.addPart(pid, Math.max(1, Math.round(numv('q-addqty')))); $('#q-addpart').value = ''; $('#q-addqty').value = 1; break; }
       case 'refresh-item': quoteForm.refreshItem(b.closest('.qitem').dataset.id); break;
       case 'convert': await convertQuote(find('quotes')); break;
