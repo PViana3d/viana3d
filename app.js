@@ -294,6 +294,8 @@ async function init(){
     return;
   }
   sb = window.supabase.createClient(CFG.supabaseUrl, CFG.supabaseAnonKey, {auth:{persistSession:true, autoRefreshToken:true, detectSessionInUrl:true}});
+  const pub = /^#orcamento=([\w-]{16,})$/.exec(location.hash);
+  if (pub){ publicQuote(pub[1]); return; }
   sb.auth.onAuthStateChange((event) => {
     if (event === 'PASSWORD_RECOVERY') showAuth('newpass', 'Escolha uma nova palavra-passe.');
     if (event === 'SIGNED_IN' && !WS) startSession();
@@ -436,6 +438,7 @@ function alerts(){
   const out = [];
   S.spools.forEach(s => { const [t, c] = spoolStatus(s); if (c !== 'ok') out.push({cls:c, title:`${spoolLabel(s)} (${s.brand || 'sem marca'})`, sub:`${t}: restam ${num(spoolRemain(s))} g`, href:'#bobines'}); });
   S.printers.forEach(p => (p.tasks || []).forEach(t => { const st = taskState(p, t); if (st.cls) out.push({cls:st.cls, title:`${p.name}: ${t.name}`, sub: (st.pct >= 1 ? `Em atraso ${num(-st.left)} ${st.u}` : `Faltam ${num(st.left)} ${st.u}`) + (st.due ? ` (${st.pct >= 1 ? 'era' : 'é'} a ${fmtDate(st.due)})` : '') + (st.either ? ` · ${taskEvery(t)}` : ''), href:'#manutencao'}); }));
+  S.quotes.filter(q => q.acceptedOnline && !orderOf(q)).forEach(q => out.push({cls:'ok', title:`Orçamento ${q.number} aceite online`, sub:`Por ${q.acceptedOnline.name} em ${fmtDT(q.acceptedOnline.at)} · falta criar a encomenda`, href:'#orcamentos'}));
   S.quotes.filter(q => q.status === 'enviado').forEach(q => out.push({cls:'info', title:`Orçamento ${q.number} · ${clientName(q) || 'sem cliente'}`, sub:`Enviado a ${fmtDate(q.date)}, a aguardar resposta`, href:'#orcamentos'}));
   S.orders.forEach(o => { const s = orderState(o); if (!s.open) return; const dl = o.due ? businessDaysBetween(today(), o.due) : 99;
     if (s.late) out.push({cls:'bad', title:`Encomenda ${o.number} · ${clientName(o) || 'sem cliente'}`, sub:`Prazo ultrapassado (${fmtDate(o.due)}) · ${s.done}/${s.total} unidades feitas`, href:'#encomendas'});
@@ -588,7 +591,7 @@ function vQuotes(){
     <div class="actions"><button class="btn primary" data-act="new-quote">Novo orçamento</button></div></div>
     <div class="chips">${chip('', 'Todos')}${Object.entries(QSTATUS).map(([k, [l]]) => chip(k, l)).join('')}</div>
     ${list.length ? `<div class="tbl-wrap"><table><thead><tr><th>Nº</th><th>Cliente</th><th>Data</th><th>Peças</th><th class="r">Filamento</th><th class="r">Tempo</th><th class="r">Total</th><th>Estado</th><th>Encomenda</th></tr></thead><tbody>
-      ${list.map(q => { const c = calcQuote(q), [l, cls] = QSTATUS[q.status] || ['—', '']; return `<tr class="click" data-act="edit-quote" data-id="${q.id}" tabindex="0"><td class="num">${esc(q.number)}</td><td>${esc(clientName(q) || '—')}</td><td>${fmtDate(q.date)}</td><td class="muted">${esc((q.items || []).map(i => i.desc).filter(Boolean).join(', ') || '—')}</td><td class="r num">${num(c.grams)} g</td><td class="r num">${hm(c.hours)}</td><td class="r num"><b>${eur(c.total)}</b></td><td><span class="pill ${cls}">${l}</span></td><td style="white-space:nowrap">${downloads ? `<button class="btn ghost sm" data-act="quote-pdf-id" data-id="${q.id}">PDF</button>` : ''}${orderOf(q) ? `<span class="mono">${esc(orderOf(q).number)}</span>` : q.status === 'aceite' ? `<button class="btn sm" data-act="convert" data-id="${q.id}">Converter</button>` : ''}</td></tr>`; }).join('')}
+      ${list.map(q => { const c = calcQuote(q), [l, cls] = QSTATUS[q.status] || ['—', '']; return `<tr class="click" data-act="edit-quote" data-id="${q.id}" tabindex="0"><td class="num">${esc(q.number)}</td><td>${esc(clientName(q) || '—')}</td><td>${fmtDate(q.date)}</td><td class="muted">${esc((q.items || []).map(i => i.desc).filter(Boolean).join(', ') || '—')}</td><td class="r num">${num(c.grams)} g</td><td class="r num">${hm(c.hours)}</td><td class="r num"><b>${eur(c.total)}</b></td><td><span class="pill ${cls}">${l}</span>${q.acceptedOnline ? '<small class="muted" style="display:block">online</small>' : q.share ? '<small class="muted" style="display:block">link enviado</small>' : ''}</td><td style="white-space:nowrap">${downloads ? `<button class="btn ghost sm" data-act="quote-pdf-id" data-id="${q.id}">PDF</button>` : ''}${orderOf(q) ? `<span class="mono">${esc(orderOf(q).number)}</span>` : q.status === 'aceite' ? `<button class="btn sm" data-act="convert" data-id="${q.id}">Converter</button>` : ''}</td></tr>`; }).join('')}
     </tbody></table></div>` : `<div class="empty">${S.quotes.length ? 'Nenhum orçamento com este estado.' : 'Ainda não criou orçamentos.'}<button class="btn" data-act="new-quote">Criar orçamento</button></div>`}`;
 }
 
@@ -1267,6 +1270,86 @@ function quotePdf(jsPDF, q){
   doc.setProperties({title:pdfT(`Orçamento ${q.number}`), subject:pdfT(cname), creator:pdfT(s.company)});
   return doc;
 }
+/* ---------- aceitação online do orçamento ---------- */
+function shareToken(){ const a = new Uint8Array(18); crypto.getRandomValues(a); return btoa(String.fromCharCode(...a)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''); }
+const shareUrl = q => location.origin + location.pathname + '#orcamento=' + q.share.token;
+// cópia do orçamento que o cliente vê (sem custos nem margens)
+function quoteSnap(q){
+  const s = settings(), c = calcQuote(q), ps = paySplit(q, c.total), cl = S.clients.find(x => x.id === q.clientId);
+  const lines = (q.items || []).map((it, i) => { const l = c.lines[i] || {}; const ms = [...new Set(filsOf(it).map(f => clientMat(f.mat)).filter(Boolean))];
+    return {desc:it.desc || 'Peça', ref:it.ref || '', mats:ms.join(', '), qty:+it.qty || 1, unit:r2(l.unitPrice || 0), disc:+it.disc || 0, net:r2(l.net || 0)}; });
+  if (c.extraLaborPrice > .004) lines.push({desc:'Mão de obra adicional', ref:'', mats:'', qty:1, unit:r2(c.extraLaborPrice), disc:0, net:r2(c.extraLaborPrice)});
+  if (c.extras > .004) lines.push({desc:'Outros custos', ref:'', mats:'', qty:1, unit:r2(c.extras), disc:0, net:r2(c.extras)});
+  return {number:q.number, date:q.date, validUntil:addDaysStr(q.date, q.validity), deliveryDays:+q.deliveryDays || 0, client:clientName(q), clientNif:cl ? cl.nif || '' : '',
+    company:{name:s.company, nif:s.cNif, address:s.cAddress, email:s.cEmail, phone:s.cPhone, web:s.cWeb, color:s.pdfColor, logo:(s.logo || '').length < 120000 ? s.logo || '' : ''},
+    lines, gross:r2(c.gross), discount:r2(c.discount), net:r2(c.net), vat:q.vat ? r2(c.vat) : null, vatPct:s.vat, total:c.total, pAdj:ps.pAdj, adj:ps.adj, pEnt:ps.pEnt, ent:ps.ent,
+    notes:q.notes || '', cond:condText(), iban:s.cIban || ''};
+}
+async function quoteLink(q){
+  if (!(q.items || []).length){ toast('O orçamento não tem peças.'); return; }
+  q = cp(q);
+  if (!q.share) q.share = {token:shareToken(), at:new Date().toISOString()};
+  if (!q.acceptedOnline) q.share.snap = quoteSnap(q);
+  if (q.status === 'rascunho') q.status = 'enviado';
+  await put('quotes', q);
+  shareDlg(q);
+}
+function shareDlg(q){
+  const url = shareUrl(q), msg = `Olá${clientName(q) ? ' ' + clientName(q).split(' ')[0] : ''}! Segue o orçamento ${q.number}. Pode consultá-lo e aceitá-lo aqui: ${url}`;
+  openDlg(`Link do orçamento ${q.number}`, `<p style="margin:0">Envie este link ao cliente. Ele vê o orçamento (sem custos nem margens) e pode aceitá-lo online. Quando aceitar, o orçamento passa a <b>Aceite</b> e aparece um aviso no Painel para criar a encomenda.</p>
+    ${q.acceptedOnline ? `<p class="okbox">Aceite online por <b>${esc(q.acceptedOnline.name)}</b> em ${fmtDT(q.acceptedOnline.at)}.${q.acceptedOnline.note ? `<br>Nota: ${esc(q.acceptedOnline.note)}` : ''}</p>` : ''}
+    <div class="field"><label for="sh-url">Link</label><input id="sh-url" readonly value="${esc(url)}"></div>
+    <div class="actions" style="justify-content:flex-start;flex-wrap:wrap"><button type="button" class="btn" data-act="sh-copy">Copiar link</button><a class="btn" target="_blank" rel="noopener" href="https://wa.me/?text=${encodeURIComponent(msg)}">Enviar por WhatsApp</a>${(S.clients.find(c => c.id === q.clientId) || {}).email ? `<a class="btn" href="mailto:${esc(S.clients.find(c => c.id === q.clientId).email)}?subject=${encodeURIComponent('Orçamento ' + q.number)}&body=${encodeURIComponent(msg)}">Enviar por email</a>` : ''}<a class="btn ghost" target="_blank" rel="noopener" href="${esc(url)}">Abrir</a></div>
+    <p class="muted" style="margin:0;font-size:.82rem">Se alterar o orçamento depois de enviar o link, o cliente passa a ver a versão nova. Para deixar de o partilhar, desative o link.</p>`,
+  {submit:'', extra:`<div class="actions"><button type="button" class="btn danger" data-act="sh-off" data-id="${q.id}">Desativar link</button></div>`});
+}
+const pubEur = v => eur(v);
+async function publicQuote(token){
+  document.body.classList.add('auth-mode', 'pub-mode');
+  const box = $('#auth'); box.hidden = false; $('#app').hidden = true;
+  box.innerHTML = '<div class="pub"><p class="muted">A abrir o orçamento…</p></div>';
+  let r;
+  try{ const {data, error} = await sb.rpc('quote_public', {p_token:token}); if (error) throw error; r = data; }
+  catch(e){ box.innerHTML = '<div class="pub"><h1>Sem ligação</h1><p>Não foi possível abrir o orçamento. Verifique a ligação à internet e tente de novo.</p><button class="btn" onclick="location.reload()">Tentar de novo</button></div>'; return; }
+  if (!r || !r.snap){ box.innerHTML = '<div class="pub"><h1>Orçamento indisponível</h1><p>Este link já não está ativo. Contacte quem lhe enviou o orçamento.</p></div>'; return; }
+  const q = r.snap, co = q.company || {}, acc = r.accepted, expired = q.validUntil && q.validUntil < today();
+  document.title = `Orçamento ${q.number} · ${co.name || ''}`;
+  if (co.color) box.style.setProperty('--accent', co.color);
+  const payLine = q.pAdj >= 100 ? `Pagamento total na adjudicação: ${pubEur(q.adj)}` : q.pAdj <= 0 ? `Pagamento total na entrega: ${pubEur(q.ent)}` : `${pctTxt(q.pAdj)} na adjudicação (${pubEur(q.adj)}) e ${pctTxt(q.pEnt)} na entrega (${pubEur(q.ent)})`;
+  const state = acc ? `<div class="okbox"><b>Orçamento aceite</b> por ${esc(acc.name)} em ${fmtDT(acc.at)}. Obrigado! Vamos entrar em contacto para combinar os próximos passos.</div>`
+    : r.status === 'recusado' ? '<div class="badbox">Este orçamento já não está disponível.</div>'
+    : expired ? `<div class="badbox">Este orçamento expirou a ${fmtDate(q.validUntil)}. Contacte-nos para o atualizar.</div>`
+    : `<form class="pub-acc" id="pub-form" novalidate><h2>Aceitar o orçamento</h2>
+        <div class="field"><label for="pa-name">O seu nome</label><input id="pa-name" autocomplete="name" required value="${esc(q.client || '')}"></div>
+        <div class="field"><label for="pa-note">Observações (opcional)</label><textarea id="pa-note" placeholder="ex.: cor preferida, morada de entrega…"></textarea></div>
+        <label class="check"><input type="checkbox" id="pa-ok"> Li e aceito o orçamento e as condições indicadas.</label>
+        <p class="auth-msg" id="pa-msg" hidden></p>
+        <button class="btn primary" type="submit">Aceitar orçamento</button></form>`;
+  box.innerHTML = `<article class="pub">
+    <header class="pub-h">${co.logo ? `<img src="${esc(co.logo)}" alt="">` : ''}<div><b>${esc(co.name || '')}</b><small>${esc([co.nif ? 'NIF ' + co.nif : '', co.phone, co.email, co.web].filter(Boolean).join(' · '))}</small></div></header>
+    <div class="pub-t"><div><div class="eyebrow">Orçamento</div><h1>${esc(q.number)}</h1>${q.client ? `<p>Para <b>${esc(q.client)}</b></p>` : ''}</div>
+      <dl class="meta"><dt>Data</dt><dd>${fmtDate(q.date)}</dd><dt>Válido até</dt><dd>${fmtDate(q.validUntil)}</dd><dt>Prazo de entrega</dt><dd>${q.deliveryDays ? q.deliveryDays + ' dias úteis após aceitação' : 'A combinar'}</dd></dl></div>
+    <div class="tbl-wrap"><table><thead><tr><th>Descrição</th><th class="r">Qtd.</th><th class="r">Preço unit.</th><th class="r">Desc.</th><th class="r">Total</th></tr></thead><tbody>
+      ${q.lines.map(l => `<tr><td><b>${esc(l.desc)}</b>${l.ref || l.mats ? `<br><small class="muted">${esc([l.ref ? 'Ref. ' + l.ref : '', l.mats].filter(Boolean).join(' · '))}</small>` : ''}</td><td class="r num">${l.qty}</td><td class="r num">${pubEur(l.unit)}</td><td class="r num">${l.disc ? num(l.disc, 1) + '%' : '—'}</td><td class="r num"><b>${pubEur(l.net)}</b></td></tr>`).join('')}
+    </tbody></table></div>
+    <div class="pub-tot">${q.discount > .004 ? `<div><span>Subtotal</span><span class="num">${pubEur(q.gross)}</span></div><div><span>Descontos</span><span class="num">-${pubEur(q.discount)}</span></div>` : ''}<div><span>Total sem IVA</span><span class="num">${pubEur(q.net)}</span></div><div><span>IVA${q.vat != null ? ` (${num(q.vatPct)}%)` : ''}</span><span class="num">${q.vat != null ? pubEur(q.vat) : 'Não incluído'}</span></div><div class="big"><span>Total</span><span class="num">${pubEur(q.total)}</span></div></div>
+    ${q.notes ? `<section><h3>Observações</h3><p>${esc(q.notes).replace(/\n/g, '<br>')}</p></section>` : ''}
+    <section><h3>Pagamento</h3><p>${esc(payLine)}${q.iban ? `<br>Transferência bancária para o IBAN <span class="mono">${esc(q.iban)}</span>.` : ''}</p>${q.cond ? `<p class="muted">${esc(q.cond).replace(/\n/g, '<br>')}</p>` : ''}</section>
+    <div id="pub-state">${state}</div>
+  </article>`;
+  const f = $('#pub-form');
+  if (f) f.addEventListener('submit', async e => {
+    e.preventDefault(); const m = $('#pa-msg'); m.hidden = true;
+    const name = $('#pa-name').value.trim();
+    if (name.length < 2){ m.textContent = 'Indique o seu nome.'; m.hidden = false; return; }
+    if (!$('#pa-ok').checked){ m.textContent = 'Confirme que aceita o orçamento e as condições.'; m.hidden = false; return; }
+    const btn = f.querySelector('button'); btn.disabled = true;
+    const {error} = await sb.rpc('quote_accept', {p_token:token, p_name:name, p_note:$('#pa-note').value.trim()});
+    if (error){ m.textContent = 'Não foi possível aceitar: ' + error.message; m.hidden = false; btn.disabled = false; return; }
+    publicQuote(token);
+  });
+}
+
 /* ---------- PDF da encomenda e comprovativo de entrega ---------- */
 function pdfKit(jsPDF){
   const s = settings(), doc = new jsPDF({unit:'mm', format:'a4', compress:true});
@@ -2205,7 +2288,7 @@ function quoteForm(q, opts = {}){
         <div class="chips">${[[50, '50 / 50'], [30, '30 / 70'], [100, 'Tudo na adjudicação'], [0, 'Tudo na entrega']].map(([v, l]) => `<button type="button" class="chip" data-act="pay-preset" data-v="${v}">${l}</button>`).join('')}</div></div>
       ${F('q-notes', 'Notas para o cliente', `<textarea id="q-notes" placeholder="ex.: Inclui pintura; portes por conta do cliente">${esc(q.notes)}</textarea>`)}
     </div><aside class="sum" id="q-sum"></aside></div>`,
-  {wide:true, extra: `<div class="actions">${isNew ? '' : `<button type="button" class="btn danger" data-act="del" data-col="quotes" data-id="${q.id}">Eliminar</button>`}<button type="button" class="btn" data-act="copy-quote">Copiar resumo</button><button type="button" class="btn" data-act="quote-pdf">Gerar PDF</button>${orderOf(q) ? `<button type="button" class="btn" data-act="edit-order" data-id="${orderOf(q).id}">Ver encomenda ${esc(orderOf(q).number)}</button>` : (q.status === 'recusado' ? '' : `<button type="button" class="btn" data-act="convert-current">Aceite: converter em encomenda</button>`)}</div>`,
+  {wide:true, extra: `<div class="actions">${isNew ? '' : `<button type="button" class="btn danger" data-act="del" data-col="quotes" data-id="${q.id}">Eliminar</button>`}<button type="button" class="btn" data-act="copy-quote">Copiar resumo</button><button type="button" class="btn" data-act="quote-pdf">Gerar PDF</button><button type="button" class="btn" data-act="quote-link">${q.share ? 'Link do cliente' : 'Enviar link ao cliente'}</button>${orderOf(q) ? `<button type="button" class="btn" data-act="edit-order" data-id="${orderOf(q).id}">Ver encomenda ${esc(orderOf(q).number)}</button>` : (q.status === 'recusado' ? '' : `<button type="button" class="btn" data-act="convert-current">Aceite: converter em encomenda</button>`)}</div>`,
    input: () => {
     const cid = val('q-client');
     $('#q-newclient').hidden = cid !== '__new';
@@ -2227,6 +2310,7 @@ function quoteForm(q, opts = {}){
       await put('clients', c); n.clientId = c.id; n.client = c.name;
     }
     if (JSON.stringify(n).length > 200000) n.items.forEach(it => { delete it.thumb; });
+    if (n.share && !n.acceptedOnline) n.share.snap = quoteSnap(n);
     await put('quotes', n); closeDlg(); toast('Orçamento guardado.');
     return n;
    }});
@@ -2303,6 +2387,13 @@ document.addEventListener('click', async e => {
       case 'add-part': { const pid = val('q-addpart'); if (!pid){ toast('Escolha uma peça do catálogo.'); break; } quoteForm.addPart(pid, Math.max(1, Math.round(numv('q-addqty')))); $('#q-addpart').value = ''; $('#q-addqty').value = 1; break; }
       case 'refresh-item': quoteForm.refreshItem(b.closest('.qitem').dataset.id); break;
       case 'convert': await convertQuote(find('quotes')); break;
+      case 'quote-link': {
+        if (val('q-client') === '__new'){ toast('Guarde primeiro o orçamento para criar o cliente.'); break; }
+        if (!val('q-number').trim()){ toast('Indique o número do orçamento.'); break; }
+        await quoteLink(quoteForm.read()); break;
+      }
+      case 'sh-copy': { const u = $('#sh-url'); try{ await navigator.clipboard.writeText(u.value); toast('Link copiado.'); }catch(e){ u.select(); toast('Selecione e copie o link.'); } break; }
+      case 'sh-off': { const q0 = cp(find('quotes')); delete q0.share; await put('quotes', q0); closeDlg(); toast('O link deixou de funcionar.'); break; }
       case 'convert-current': {
         if (val('q-client') === '__new'){ toast('Guarde primeiro o orçamento para criar o cliente.'); break; }
         const n = quoteForm.read(); if (!n.items.length){ toast('O orçamento não tem peças.'); break; }

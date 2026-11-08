@@ -154,3 +154,44 @@ do $$ begin
     alter publication supabase_realtime add table public.docs;
   end if;
 end $$;
+
+-- ============================================================
+-- Aceitação online de orçamentos (link enviado ao cliente)
+-- O cliente não tem conta: só consegue ler a cópia preparada
+-- (data.share.snap) e marcar o orçamento como aceite.
+-- ============================================================
+create index if not exists docs_quote_share_token on public.docs ((data->'share'->>'token')) where collection = 'quotes';
+
+create or replace function public.quote_public(p_token text)
+returns jsonb language plpgsql stable security definer set search_path = '' as $$
+declare d jsonb;
+begin
+  if p_token is null or length(p_token) < 16 then return null; end if;
+  select data into d from public.docs where collection = 'quotes' and data->'share'->>'token' = p_token limit 1;
+  if d is null then return null; end if;
+  return jsonb_build_object('snap', d->'share'->'snap', 'status', d->>'status', 'accepted', d->'acceptedOnline');
+end $$;
+
+create or replace function public.quote_accept(p_token text, p_name text, p_note text default '')
+returns jsonb language plpgsql security definer set search_path = '' as $$
+declare r record; vu text;
+begin
+  if p_token is null or length(p_token) < 16 then raise exception 'link inválido'; end if;
+  if p_name is null or length(btrim(p_name)) < 2 then raise exception 'indique o nome'; end if;
+  select workspace_id, id, data into r from public.docs where collection = 'quotes' and data->'share'->>'token' = p_token limit 1 for update;
+  if not found then raise exception 'link inválido'; end if;
+  if r.data ? 'acceptedOnline' then return jsonb_build_object('ok', true, 'accepted', r.data->'acceptedOnline'); end if;
+  if r.data->>'status' = 'recusado' then raise exception 'este orçamento já não está disponível'; end if;
+  vu := r.data->'share'->'snap'->>'validUntil';
+  if vu is not null and vu <> '' and vu::date < current_date then raise exception 'este orçamento expirou'; end if;
+  update public.docs set data = data || jsonb_build_object('status', 'aceite', 'acceptedOnline',
+      jsonb_build_object('name', left(btrim(p_name), 120), 'note', left(coalesce(p_note, ''), 1000), 'at', to_char(now() at time zone 'Europe/Lisbon', 'YYYY-MM-DD"T"HH24:MI'))),
+    updated_at = now()
+  where workspace_id = r.workspace_id and collection = 'quotes' and id = r.id;
+  return jsonb_build_object('ok', true);
+end $$;
+
+revoke all on function public.quote_public(text) from public;
+revoke all on function public.quote_accept(text, text, text) from public;
+grant execute on function public.quote_public(text) to anon, authenticated;
+grant execute on function public.quote_accept(text, text, text) to anon, authenticated;

@@ -372,3 +372,25 @@ label.check{display:flex;align-items:center;gap:8px;font-size:.9rem}
 .spool-q{display:flex;gap:12px;align-items:center}
 .spool-q .sw{width:34px;height:34px;border-radius:50%}
 .spool-q small{display:block}
+
+/* orçamento público (aceitação online) */
+body.pub-mode{place-items:start center}
+.pub{width:min(860px,100%);background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:28px 28px 32px;display:flex;flex-direction:column;gap:20px}
+.pub-h{display:flex;gap:14px;align-items:center;border-bottom:3px solid var(--accent);padding-bottom:14px}
+.pub-h img{max-height:52px;max-width:160px;object-fit:contain}
+.pub-h b{display:block;font-size:1.1rem}.pub-h small{color:var(--muted)}
+.pub-t{display:flex;justify-content:space-between;gap:20px;flex-wrap:wrap}
+.pub-t h1{color:var(--accent);font-size:1.8rem;margin:2px 0}
+.pub-t .meta{min-width:240px}
+.pub-tot{align-self:flex-end;width:min(320px,100%);display:flex;flex-direction:column;gap:6px}
+.pub-tot div{display:flex;justify-content:space-between;color:var(--muted)}
+.pub-tot .big{background:var(--accent);color:#fff;border-radius:8px;padding:10px 12px;font-weight:700;font-size:1.1rem}
+.pub h3{font-size:.78rem;letter-spacing:.06em;text-transform:uppercase;color:var(--accent);margin:0 0 4px}
+.pub section p{margin:0 0 6px}
+.pub-acc{border:1px solid var(--line);border-radius:10px;padding:18px;display:flex;flex-direction:column;gap:12px;background:var(--sunk)}
+.pub-acc h2{font-size:1.15rem;margin:0}
+.okbox{background:var(--ok-soft);border:1px solid var(--ok);border-radius:8px;padding:12px 14px;margin:0}
+.badbox{background:var(--bad-soft);border:1px solid var(--bad);border-radius:8px;padding:12px 14px}
+@media (max-width:600px){.pub{padding:18px 14px}.pub table th:nth-child(4),.pub table td:nth-child(4){display:none}}
+a.btn{text-decoration:none;color:var(--fg)}
+a.btn.primary{color:#fff}
