@@ -489,6 +489,9 @@ function renderNav(){
 function render(){
   renderNav();
   if (!loaded){ $('#view').innerHTML = '<div class="loading">A carregar dados…</div>'; return; }
+  // link do código QR de uma bobine: #bobine=ID
+  const dl = /^#bobine=(.+)$/.exec(location.hash);
+  if (dl){ history.replaceState(null, '', '#bobines'); renderNav(); const sp = S.spools.find(x => x.id === decodeURIComponent(dl[1])); setTimeout(() => sp ? spoolDlg(sp) : toast('Esta bobine já não existe.'), 0); }
   const v = current();
   const html = ({painel:vPainel, orcamentos:vQuotes, encomendas:vOrders, producao:vProduction, pecas:vParts, clientes:vClients, bobines:vSpools, compras:vPurchases, manutencao:vPrinters, relatorios:vReports, definicoes:vSettings})[v]();
   const banner = online ? '' : '<div class="banner">Sem ligação à internet. Está a ver os dados guardados neste aparelho; as alterações só são possíveis com ligação.</div>';
@@ -536,7 +539,7 @@ function vSpools(){
   const stockVal = S.spools.reduce((a, s) => a + spoolRemain(s) / 1000 * spoolEurKg(s), 0);
   const chip = (k, v, l) => `<button class="chip" data-act="filter" data-k="${k}" data-v="${esc(v)}" aria-pressed="${st[k] === v}">${esc(l)}</button>`;
   return `<div class="head"><div><div class="eyebrow">Controlo de filamento</div><h1>Bobines</h1><p><span class="num">${num(stockKg, 2)} kg</span> em stock · valor <span class="num">${eur(stockVal)}</span> · ${S.spools.length} bobines</p></div>
-    <div class="actions"><button class="btn primary" data-act="new-spool">Nova bobine</button></div></div>
+    <div class="actions">${S.spools.length ? '<button class="btn" data-act="labels">Etiquetas QR</button>' : ''}<button class="btn primary" data-act="new-spool">Nova bobine</button></div></div>
     <div class="chips">${chip('spoolMat', '', 'Todos os materiais')}${mats.map(m => chip('spoolMat', m, m)).join('')}
       <span style="width:12px"></span>${chip('spoolStatus', '', 'Todas')}${chip('spoolStatus', 'warn', 'Stock baixo')}${chip('spoolStatus', 'bad', 'Esgotadas')}</div>
     ${list.length ? `<div class="grid">${list.map(spoolCard).join('')}</div>` : `<div class="empty">${S.spools.length ? 'Nenhuma bobine com estes filtros.' : 'Ainda não registou bobines.'}<button class="btn" data-act="new-spool">Adicionar bobine</button></div>`}`;
@@ -550,7 +553,7 @@ function spoolCard(s){
       <div class="spool-id"><b>${esc(spoolLabel(s))}</b><small>${esc(s.brand || 'Sem marca')}${s.diameter ? ' · ' + esc(s.diameter) + ' mm' : ''}</small><span class="pill ${c}">${t}</span></div>
     </div>
     <dl class="meta"><dt>Restante</dt><dd>${num(spoolRemain(s))} / ${num(s.weight)} g</dd>${rsv ? `<dt>Reservado</dt><dd class="${rsv > spoolRemain(s) + .5 ? 'neg-txt' : ''}">${num(rsv)} g na fila${rsv > spoolRemain(s) + .5 ? ' · não chega' : ''}</dd>` : ''}<dt>Preço</dt><dd>${eur(s.price)} · ${eur(spoolEurKg(s))}/kg</dd><dt>Comprada</dt><dd>${fmtDate(s.bought)}</dd>${s.purchaseNumber ? `<dt>Compra</dt><dd>${esc(s.purchaseNumber)}${s.supplier ? ' · ' + esc(s.supplier) : ''}</dd>` : ''}${s.location ? `<dt>Local</dt><dd>${esc(s.location)}</dd>` : ''}</dl>
-    <div class="card-foot"><button class="btn ghost sm" data-act="weigh" data-id="${s.id}">Pesar</button><button class="btn ghost sm" data-act="edit-spool" data-id="${s.id}">Editar</button><button class="btn ghost sm danger" data-act="del" data-col="spools" data-id="${s.id}">Eliminar</button></div>
+    <div class="card-foot"><button class="btn ghost sm" data-act="weigh" data-id="${s.id}">Pesar</button><button class="btn ghost sm" data-act="labels" data-id="${s.id}">Etiqueta</button><button class="btn ghost sm" data-act="edit-spool" data-id="${s.id}">Editar</button><button class="btn ghost sm danger" data-act="del" data-col="spools" data-id="${s.id}">Eliminar</button></div>
   </article>`;
 }
 
@@ -1523,6 +1526,63 @@ function spoolForm(s){
     await put('spools', s); closeDlg(); toast(isNew ? 'Bobine adicionada.' : 'Bobine atualizada.');
   }});
 }
+/* ---------- etiquetas QR das bobines ---------- */
+const spoolUrl = s => location.origin + location.pathname + '#bobine=' + encodeURIComponent(s.id);
+const spoolCode = s => String(s.id).slice(-6).toUpperCase();
+async function ensureQR(){
+  if (window.qrcode) return window.qrcode;
+  await loadScript('vendor/qrcode.js'); if (!window.qrcode) throw new Error('qrcode'); return window.qrcode;
+}
+function spoolDlg(s){
+  const rsv = reservations().sp[s.id] || 0, [t, c] = spoolStatus(s);
+  const jobs = S.jobs.filter(j => usesOf(j).some(u => u.spoolId === s.id)).sort((a, b) => (b.date || '').localeCompare(a.date || '')).slice(0, 5);
+  openDlg(spoolLabel(s), `<div class="spool-q">${swatch(s.hex)}<div><b>${esc(s.brand || 'Sem marca')}</b> · ${esc(s.material)}${s.diameter ? ' · ' + esc(s.diameter) + ' mm' : ''} <span class="pill ${c}">${t}</span><small class="muted mono">Código ${esc(spoolCode(s))}</small></div></div>
+    <dl class="meta"><dt>Restante</dt><dd class="num">${num(spoolRemain(s))} / ${num(s.weight)} g</dd>${rsv ? `<dt>Reservado na fila</dt><dd class="num ${rsv > spoolRemain(s) + .5 ? 'neg-txt' : ''}">${num(rsv)} g</dd>` : ''}<dt>Preço</dt><dd>${eur(spoolEurKg(s))}/kg</dd><dt>Comprada</dt><dd>${fmtDate(s.bought)}</dd></dl>
+    ${jobs.length ? `<h3>Últimas impressões</h3><ul class="alerts">${jobs.map(j => `<li><span class="pill ${j.result === 'sucesso' ? 'ok' : 'bad'}">${j.result === 'sucesso' ? 'OK' : 'Falha'}</span><div class="txt">${esc(j.name)}<small>${fmtDate(j.date)} · ${num(usesOf(j).filter(u => u.spoolId === s.id).reduce((a, u) => a + u.grams, 0))} g</small></div></li>`).join('')}</ul>` : ''}`,
+  {submit:'', extra:`<div class="actions"><button type="button" class="btn" data-act="edit-spool" data-id="${s.id}">Editar</button><button type="button" class="btn primary" data-act="weigh" data-id="${s.id}">Pesar</button></div>`});
+}
+function labelsDlg(only){
+  const list = [...S.spools].sort((a, b) => spoolLabel(a).localeCompare(spoolLabel(b), 'pt'));
+  openDlg('Etiquetas QR das bobines', `<p style="margin:0">Cole a etiqueta na bobine. Ao ler o código com o telemóvel abre a ficha da bobine nesta aplicação, para pesar ou ver o que resta.</p>
+    <div class="row">${F('lb-fmt', 'Formato', sel('lb-fmt', [['a4', 'Folha A4 com 21 etiquetas (63,5 × 38,1 mm)'], ['50x30', 'Rolo de etiquetas 50 × 30 mm (uma por página)']], 'a4'))}<div class="field" id="lb-skip-w">${`<label for="lb-skip">Começar na etiqueta nº</label>${inp('lb-skip', 1, 'number', 'min="1" max="21" step="1"')}<span class="hint">Para aproveitar folhas já usadas.</span>`}</div></div>
+    <div class="lb-list">${list.map(s => `<label class="check"><input type="checkbox" data-lb="${s.id}" ${only ? (s.id === only ? 'checked' : '') : spoolRemain(s) > 0 ? 'checked' : ''}> ${swatch(s.hex)} ${esc(spoolLabel(s))} <small class="muted">${esc(s.brand || '')} · ${num(spoolRemain(s))} g</small></label>`).join('')}</div>
+    <p class="muted" id="lb-out" style="margin:0"></p>`,
+  {wide:true, submit:'Gerar PDF', input: () => { $('#lb-skip-w').hidden = val('lb-fmt') !== 'a4'; const n = document.querySelectorAll('[data-lb]:checked').length; $('#lb-out').textContent = `${n} etiqueta${n === 1 ? '' : 's'}${val('lb-fmt') === 'a4' && n ? ` · ${Math.ceil((n + Math.max(0, numv('lb-skip') - 1)) / 21)} folha(s)` : ''}`; },
+   handler: async () => {
+    const ids = [...document.querySelectorAll('[data-lb]:checked')].map(i => i.dataset.lb), sel = ids.map(id => S.spools.find(x => x.id === id)).filter(Boolean);
+    if (!sel.length){ toast('Escolha pelo menos uma bobine.'); return; }
+    let jsPDF, qr; try{ jsPDF = await ensureJsPDF(); qr = await ensureQR(); }catch(e){ toast('Não foi possível carregar o gerador de PDF. Verifique a ligação.'); return; }
+    const doc = labelsPdf(jsPDF, qr, sel, val('lb-fmt'), Math.min(21, Math.max(1, Math.round(numv('lb-skip')))) - 1);
+    await downloads.save({filename:`etiquetas-bobines-${today()}.pdf`, data:doc.output('blob')}); closeDlg(); toast('PDF das etiquetas criado.');
+  }});
+}
+function drawQR(doc, qrcode, text, x, y, size){
+  const q = qrcode(0, 'M'); q.addData(text); q.make();
+  const n = q.getModuleCount(), m = size / (n + 4); doc.setFillColor(0, 0, 0);
+  for (let r = 0; r < n; r++){ let c = 0; while (c < n){ if (!q.isDark(r, c)){ c++; continue; } let e = c; while (e < n && q.isDark(r, e)) e++; doc.rect(x + (c + 2) * m, y + (r + 2) * m, (e - c) * m, m + .02, 'F'); c = e; } }
+}
+function drawLabel(doc, qrcode, s, x, y, w, h){
+  const pad = h * .07, qs = h - pad * 2, f = h / 38.1, tx = x + pad + qs + pad * .6, tw = x + w - pad - tx;
+  drawQR(doc, qrcode, spoolUrl(s), x, y + pad * .4, qs + pad * 1.2);
+  const [r, g, b] = hexRgb(s.hex || '#ffffff'); doc.setFillColor(r, g, b); doc.setDrawColor(150); doc.setLineWidth(.2); doc.roundedRect(x + w - pad - 5 * f, y + pad, 5 * f, 5 * f, .8, .8, 'FD');
+  let cy = y + pad + 3.6 * f;
+  doc.setTextColor(20); doc.setFont('helvetica', 'bold'); doc.setFontSize(12 * f); doc.text(pdfT(s.material || ''), tx, cy); cy += 4.6 * f;
+  doc.setFontSize(9.5 * f); doc.splitTextToSize(pdfT(String(s.color || '').replace(/\s*\(exemplo\)/, '')), tw).slice(0, 2).forEach(l => { doc.text(l, tx, cy); cy += 3.9 * f; });
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(7.5 * f); doc.setTextColor(70);
+  [s.brand, `${num(s.weight)} g${s.diameter ? ' · ' + s.diameter + ' mm' : ''}`, s.bought ? 'Compra ' + s.bought.slice(8, 10) + '/' + s.bought.slice(5, 7) + '/' + s.bought.slice(2, 4) : ''].filter(Boolean).forEach(l => { if (cy < y + h - pad - 3.5 * f){ doc.text(pdfT(doc.splitTextToSize(pdfT(l), tw)[0]), tx, cy); cy += 3.3 * f; } });
+  doc.setFont('courier', 'bold'); doc.setFontSize(7 * f); doc.setTextColor(20); doc.text(spoolCode(s), tx, y + h - pad);
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(5.5 * f); doc.setTextColor(120); doc.text(pdfT(settings().company), x + w - pad, y + h - pad, {align:'right'});
+}
+function labelsPdf(jsPDF, qrcode, list, fmt, skip){
+  if (fmt === '50x30'){
+    const doc = new jsPDF({unit:'mm', format:[50, 30], orientation:'landscape'});
+    list.forEach((s, i) => { if (i) doc.addPage([50, 30], 'landscape'); drawLabel(doc, qrcode, s, 0, 0, 50, 30); });
+    return doc;
+  }
+  const doc = new jsPDF({unit:'mm', format:'a4'}), W = 63.5, H = 38.1, L = 7.2, T = 15.15, PX = 66.04;
+  list.forEach((s, i) => { const k = i + skip, pos = k % 21; if (k && pos === 0) doc.addPage(); drawLabel(doc, qrcode, s, L + (pos % 3) * PX, T + Math.floor(pos / 3) * H, W, H); });
+  return doc;
+}
 function weighForm(s){
   s = cp(s);
   openDlg('Pesar bobine', `<p style="margin:0">${esc(spoolLabel(s))} · restante registado <b class="num">${num(spoolRemain(s))} g</b></p>
@@ -2107,6 +2167,7 @@ document.addEventListener('click', async e => {
       case 'new-spool': spoolForm(); break;
       case 'edit-spool': spoolForm(find('spools')); break;
       case 'weigh': weighForm(find('spools')); break;
+      case 'labels': labelsDlg(b.dataset.id); break;
       case 'new-printer': printerForm(); break;
       case 'edit-printer': printerForm(find('printers')); break;
       case 'new-maint': maintForm(id); break;

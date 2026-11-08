@@ -365,3 +365,10 @@ label.check{display:flex;align-items:center;gap:8px;font-size:.9rem}
 .task-row .tf-s{flex:1 1 150px;min-width:130px}
 .purge-box > .hint{font-size:.78rem;color:var(--muted)}
 .task-row .tf-s{flex:0 1 180px}
+
+/* etiquetas QR */
+.lb-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:6px 16px;max-height:320px;overflow:auto;padding:4px 2px}
+.lb-list .check{font-size:.86rem}
+.spool-q{display:flex;gap:12px;align-items:center}
+.spool-q .sw{width:34px;height:34px;border-radius:50%}
+.spool-q small{display:block}

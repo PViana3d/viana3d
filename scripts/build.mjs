@@ -16,7 +16,8 @@ for (const f of ['index.html', 'sw.js']) writeFileSync(`${out}/${f}`, readFileSy
 const vendor = {
   'supabase.js': 'node_modules/@supabase/supabase-js/dist/umd/supabase.js',
   'jspdf.umd.min.js': 'node_modules/jspdf/dist/jspdf.umd.min.js',
-  'jszip.min.js': 'node_modules/jszip/dist/jszip.min.js'
+  'jszip.min.js': 'node_modules/jszip/dist/jszip.min.js',
+  'qrcode.js': 'node_modules/qrcode-generator/dist/qrcode.js'
 };
 for (const [name, src] of Object.entries(vendor)) {
   if (!existsSync(src)) { console.error(`Falta ${src}. Corra "npm install" primeiro.`); process.exit(1); }
