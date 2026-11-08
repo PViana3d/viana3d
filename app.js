@@ -14,10 +14,10 @@ const val = id => { const e = document.getElementById(id); return e ? e.value : 
 const numv = id => parseFloat(String(val(id)).replace(',', '.')) || 0;
 
 const MAT_COLORS = {PLA:'#4C8BF5', PETG:'#0A9E8F', ABS:'#D9822B', ASA:'#B05FD0', TPU:'#D9466F', Resina:'#7C8A2E', Outro:'#7A8784'};
-const DEF = {company:'Oficina 3D', kwh:0.16, labor:15, margin:40, failure:10, vat:23, low:150, delivery:5,
+const DEF = {company:'Oficina 3D', kwh:0.16, labor:15, margin:40, failure:10, vat:23, low:150, delivery:5, payAdj:50,
   matPrices:{PLA:20, PETG:22, ABS:22, ASA:28, TPU:30, Resina:35},
   cNif:'', cAddress:'', cPhone:'', cEmail:'', cWeb:'', cIban:'', logo:'', pdfColor:'#0A7470',
-  cond:'Pagamento: 50% na adjudicação e 50% na entrega.\nPreços em euros. Portes de envio não incluídos, salvo indicação em contrário.'};
+  cond:'Preços em euros. Portes de envio não incluídos, salvo indicação em contrário.'};
 const COLS = ['spools','printers','maint','jobs','quotes','clients','parts','orders','plan','purchases','stock'];
 const S = {spools:[], printers:[], maint:[], jobs:[], quotes:[], clients:[], parts:[], orders:[], plan:[], purchases:[], stock:[], settings:cp(DEF)};
 const QSTATUS = {rascunho:['Rascunho',''], enviado:['Enviado','info'], aceite:['Aceite','ok'], recusado:['Recusado','bad']};
@@ -362,6 +362,18 @@ function bestSpool(type, hex, need){
 const filsText = x => [...new Set(filsOf(x).map(f => matLabel(f.mat)))].join(', ');
 const filsTypes = x => [...new Set(filsOf(x).map(f => matType(f.mat)).filter(Boolean))].join(' + ');
 
+/* ---------- pagamento: adjudicação / entrega ---------- */
+function paySplit(q, total){
+  const raw = q && q.payAdj != null && q.payAdj !== '' ? +q.payAdj : settings().payAdj;
+  const pAdj = Math.min(100, Math.max(0, isNaN(raw) ? 50 : raw)), adj = r2(total * pAdj / 100);
+  return {pAdj, pEnt:r2(100 - pAdj), adj, ent:r2(total - adj)};
+}
+const pctTxt = v => num(v, v % 1 ? 1 : 0) + '%';
+const payText = ps => ps.pAdj >= 100 ? `Pagamento total na adjudicação: ${eur(ps.adj)}.` : ps.pAdj <= 0 ? `Pagamento total na entrega: ${eur(ps.ent)}.`
+  : `Pagamento: ${pctTxt(ps.pAdj)} na adjudicação (${eur(ps.adj)}) e ${pctTxt(ps.pEnt)} na entrega (${eur(ps.ent)}).`;
+// as condições antigas tinham a percentagem escrita à mão: tira essa frase para não contradizer o orçamento
+const condText = () => String(settings().cond || '').replace(/^[ \t]*Pagamento:[^\n]*adjudica[^\n]*(\n|$)/gim, '').trim();
+
 function calcQuote(q){
   const s = settings();
   const pr = S.printers.find(p => p.id === q.printerId) || {};
@@ -584,6 +596,7 @@ function vSettings(){
       <div class="field"><label for="s-vat">IVA (%)</label><input id="s-vat" type="number" step="1" min="0" value="${s.vat}"></div>
       <div class="field"><label for="s-low">Alerta de stock baixo (g)</label><input id="s-low" type="number" step="10" min="0" value="${s.low}"></div>
       <div class="field"><label for="s-delivery">Prazo de entrega por defeito (dias úteis)</label><input id="s-delivery" type="number" step="1" min="0" value="${s.delivery}"></div>
+      <div class="field"><label for="s-payadj">Pagamento na adjudicação por defeito (%)</label><input id="s-payadj" type="number" step="1" min="0" max="100" value="${s.payAdj}"><span class="hint">O resto paga-se na entrega.</span></div>
     </div>
     <h2>Preço de referência dos materiais (€/kg)</h2>
     <p class="muted" style="margin:0">Usado nos orçamentos quando escolhe um material genérico em vez de uma bobine específica.</p>
@@ -604,7 +617,7 @@ function vSettings(){
         <label class="btn sm file-btn">Escolher imagem<input type="file" id="s-logo" accept="image/png,image/jpeg,image/webp,image/svg+xml"></label>${(st.logo !== undefined ? st.logo : s.logo) ? '<button type="button" class="btn ghost sm" data-act="logo-rm">Remover</button>' : ''}</div><span class="hint">PNG com fundo transparente fica melhor.</span></div>
       <div class="field"><label for="s-color">Cor do documento</label><input id="s-color" type="color" value="${esc(s.pdfColor)}" style="height:40px;padding:4px"></div>
     </div>
-    <div class="field"><label for="s-cond">Condições (aparecem no fim do orçamento)</label><textarea id="s-cond" style="min-height:90px">${esc(s.cond)}</textarea></div>
+    <div class="field"><label for="s-cond">Condições (aparecem no fim do orçamento)</label><span class="hint">A divisão do pagamento (adjudicação / entrega) escolhe-se em cada orçamento e aparece no PDF; não precisa de a escrever aqui.</span><textarea id="s-cond" style="min-height:90px">${esc(s.cond)}</textarea></div>
     <div class="actions"><button class="btn primary" type="submit">Guardar definições</button></div>
   </form>
   ${backupPanel()}
@@ -682,7 +695,7 @@ async function convertQuote(q){
   if (!(q.items || []).length){ toast('O orçamento não tem peças.'); return; }
   const c = calcQuote(q);
   const o = {id:uid(), number:nextNumber(S.orders, 'ENC'), quoteId:q.id, quoteNumber:q.number, clientId:q.clientId || '', client:clientName(q), date:today(),
-    due: addBusinessDays(today(), +q.deliveryDays || 0), closed:'', notes:q.notes || '', total:c.total, net:c.net, printerId:q.printerId || '',
+    due: addBusinessDays(today(), +q.deliveryDays || 0), closed:'', notes:q.notes || '', total:c.total, net:c.net, payAdj:paySplit(q, c.total).pAdj, printerId:q.printerId || '',
     items:(q.items || []).map(it => withFils({id:it.id, partId:it.partId || '', desc:it.desc, ref:it.ref || '', hours:+it.hours || 0, qty:+it.qty || 1, thumb:it.thumb || ''}, filsOf(it)))};
   if (JSON.stringify(o).length > 200000) o.items.forEach(it => { it.thumb = ''; });
   if (q.status !== 'aceite') await put('quotes', {...q, status:'aceite'});
@@ -697,7 +710,7 @@ function orderForm(o){
   const jobs = S.jobs.filter(j => j.orderId === o.id).sort((a, b) => (b.date || '').localeCompare(a.date || ''));
   const [sl, sc] = OSTATUS[stt.status];
   openDlg(`Encomenda ${o.number}`, `
-    <div class="ostrip"><div><span class="eyebrow">Cliente</span><b>${esc(clientName(o) || '—')}</b></div><div><span class="eyebrow">Orçamento</span><b class="mono">${esc(o.quoteNumber || '—')}</b></div><div><span class="eyebrow">Total</span><b class="num">${eur(o.total)}</b></div><div><span class="eyebrow">Estado</span><span class="pill ${sc}">${sl}</span>${stt.late ? ' <span class="pill bad">Atrasada</span>' : ''}</div></div>
+    <div class="ostrip"><div><span class="eyebrow">Cliente</span><b>${esc(clientName(o) || '—')}</b></div><div><span class="eyebrow">Orçamento</span><b class="mono">${esc(o.quoteNumber || '—')}</b></div><div><span class="eyebrow">Total</span><b class="num">${eur(o.total)}</b></div><div><span class="eyebrow">Pagamento</span><b class="num" style="font-size:.85rem">${(() => { const ps = paySplit(o, +o.total || 0); return ps.pAdj >= 100 ? 'Tudo na adjudicação' : ps.pAdj <= 0 ? 'Tudo na entrega' : `${eur(ps.adj)} adjudicação · ${eur(ps.ent)} entrega`; })()}</b></div><div><span class="eyebrow">Estado</span><span class="pill ${sc}">${sl}</span>${stt.late ? ' <span class="pill bad">Atrasada</span>' : ''}</div></div>
     <div class="row">${F('o-date', 'Data da encomenda', inp('o-date', o.date, 'date'))}${F('o-due', 'Prazo de entrega', inp('o-due', o.due, 'date'))}${F('o-closed', 'Estado', sel('o-closed', [['', 'Automático (pela produção)'], ['entregue', 'Entregue ao cliente'], ['cancelada', 'Cancelada']], o.closed || ''))}</div>
     <div class="tbl-wrap"><table><thead><tr><th></th><th>Peça</th><th class="r">Qtd.</th><th class="r">Feitas</th><th class="r">Planeadas</th><th class="r">Por planear</th><th style="width:120px">Progresso</th></tr></thead><tbody>
       ${stt.items.map(i => `<tr><td style="width:48px">${thumbImg(i.thumb, 36)}</td><td>${esc(i.desc)}${i.ref ? ` <small class="muted mono">${esc(i.ref)}</small>` : ''}<br><small class="muted">${filsOf(i).length > 1 ? filsOf(i).map(f => swatch(matHex(f.mat) || f.hex)).join('') + ' ' : ''}${esc(filsText(i))}</small></td><td class="r num">${i.qty}</td><td class="r num">${i.done}</td><td class="r num">${i.planned}</td><td class="r num">${i.toPlan ? `<b>${i.toPlan}</b>` : '0'}</td><td><div class="bar"><i class="${i.done >= i.qty ? '' : 'info'}" style="width:${Math.min(100, i.done / (i.qty || 1) * 100)}%"></i></div></td></tr>`).join('')}
@@ -1039,7 +1052,12 @@ function quotePdf(jsPDF, q){
   y = Math.max(by + 11, y + 9.5 + notes.length * 4.2) + 8;
 
   // condições, pagamento e aceitação
-  const cond = [s.cond, s.cIban ? `Pagamento por transferência bancária para o IBAN ${s.cIban}.` : ''].filter(Boolean).join('\n');
+  const ps = paySplit(q, c.total);
+  const payLine = ps.pAdj >= 100 ? `Pagamento total na adjudicação: ${eur(ps.adj)}` : ps.pAdj <= 0 ? `Pagamento total na entrega: ${eur(ps.ent)}`
+    : `Na adjudicação (${pctTxt(ps.pAdj)}): ${eur(ps.adj)}      Na entrega (${pctTxt(ps.pEnt)}): ${eur(ps.ent)}`;
+  if (y + 12 > BOTTOM){ doc.addPage(); y = M; }
+  font(7.5, 'bold', acc); T('PAGAMENTO', M, y); font(9.5, 'bold'); T(payLine, M, y + 5.5); y += 5.5 + 8;
+  const cond = [condText(), s.cIban ? `Pagamento por transferência bancária para o IBAN ${s.cIban}.` : ''].filter(Boolean).join('\n');
   if (cond){
     font(8.5); const cl2 = wrap(cond, CW);
     if (y + cl2.length * 4 + 10 > BOTTOM){ doc.addPage(); y = M; }
@@ -1773,7 +1791,7 @@ function quoteForm(q, opts = {}){
   quoteForm.partOpts = partOpts;
   const read = () => {
     const cid = val('q-client');
-    return {...q, number:val('q-number').trim(), clientId:cid === '__new' || cid === '__legacy' ? '' : cid, client:cid === '__new' ? val('qc-name').trim() : cid === '__legacy' ? q.client : clientName({clientId:cid}), date:val('q-date'), validity:numv('q-validity'), deliveryDays:Math.round(numv('q-delivery')), status:val('q-status'), printerId:val('q-printer'),
+    return {...q, number:val('q-number').trim(), clientId:cid === '__new' || cid === '__legacy' ? '' : cid, client:cid === '__new' ? val('qc-name').trim() : cid === '__legacy' ? q.client : clientName({clientId:cid}), date:val('q-date'), validity:numv('q-validity'), deliveryDays:Math.round(numv('q-delivery')), payAdj:Math.min(100, Math.max(0, numv('q-adj'))), status:val('q-status'), printerId:val('q-printer'),
       laborRate:numv('q-rate'), laborH:numv('q-labor'), extras:numv('q-extras'), failure:numv('q-failure'), margin:numv('q-margin'), vat:$('#q-vat').checked, notes:val('q-notes').trim(),
       items:[...document.querySelectorAll('#q-items .qitem')].map(r => { const id = r.dataset.id; const fl = filsOf(snap[id]).map((f, k) => { const m = val(`i-m-${id}-${k}`) || f.mat; return {mat:m, grams:f.grams, hex:f.hex}; }); return withFils({...snap[id], id, qty:Math.max(1, Math.round(numv('i-q-' + id))), disc:Math.min(100, Math.max(0, numv('i-x-' + id)))}, fl); })};
   };
@@ -1792,6 +1810,8 @@ function quoteForm(q, opts = {}){
       <div class="row">${F('q-rate', 'Mão de obra (€/hora)', inp('q-rate', q.laborRate, 'number', 'min="0" step="0.5"'))}${F('q-labor', 'Mão de obra adicional (h)', inp('q-labor', q.laborH || 0, 'number', 'min="0" step="0.25"'))}${F('q-extras', 'Extras (€)', inp('q-extras', q.extras, 'number', 'min="0" step="0.01"'))}</div>
       <div class="row">${F('q-failure', 'Margem p/ falhas (%)', inp('q-failure', q.failure, 'number', 'min="0" step="1"'))}${F('q-margin', 'Margem de lucro (%)', inp('q-margin', q.margin, 'number', 'min="0" step="1"'))}</div>
       <label class="check"><input type="checkbox" id="q-vat" ${q.vat ? 'checked' : ''}> Incluir IVA (${num(s.vat)}%)</label>
+      <div class="pay-box"><div class="row">${F('q-adj', 'Pagamento na adjudicação (%)', inp('q-adj', q.payAdj ?? s.payAdj, 'number', 'min="0" max="100" step="1"'))}<div class="field"><label>Na entrega</label><div class="pay-ent" id="q-ent"></div></div></div>
+        <div class="chips">${[[50, '50 / 50'], [30, '30 / 70'], [100, 'Tudo na adjudicação'], [0, 'Tudo na entrega']].map(([v, l]) => `<button type="button" class="chip" data-act="pay-preset" data-v="${v}">${l}</button>`).join('')}</div></div>
       ${F('q-notes', 'Notas para o cliente', `<textarea id="q-notes" placeholder="ex.: Inclui pintura; portes por conta do cliente">${esc(q.notes)}</textarea>`)}
     </div><aside class="sum" id="q-sum"></aside></div>`,
   {wide:true, extra: `<div class="actions">${isNew ? '' : `<button type="button" class="btn danger" data-act="del" data-col="quotes" data-id="${q.id}">Eliminar</button>`}<button type="button" class="btn" data-act="copy-quote">Copiar resumo</button><button type="button" class="btn" data-act="quote-pdf">Gerar PDF</button>${orderOf(q) ? `<button type="button" class="btn" data-act="edit-order" data-id="${orderOf(q).id}">Ver encomenda ${esc(orderOf(q).number)}</button>` : (q.status === 'recusado' ? '' : `<button type="button" class="btn" data-act="convert-current">Aceite: converter em encomenda</button>`)}</div>`,
@@ -1804,7 +1824,8 @@ function quoteForm(q, opts = {}){
     const n = read(), c = calcQuote(n), L = (l, v, cls = '') => `<div class="l ${cls}"><span>${l}</span><span>${v}</span></div>`;
     [...document.querySelectorAll('#q-items .qitem')].forEach((r, i) => { const l = c.lines[i]; if (!l) return; r.querySelector('.u').textContent = `${eur(l.unitPrice)} /un.`; r.querySelector('.t').textContent = eur(l.net); r.querySelector('.t').title = l.disc ? `Antes do desconto: ${eur(l.gross)}` : ''; });
     $('#q-empty').hidden = n.items.length > 0;
-    $('#q-sum').innerHTML = `<div class="eyebrow">Cálculo</div>${L('Filamento', eur(c.material))}${L(`${num(c.grams)} g · ${hm(c.hours)} de máquina`, '', 'sub')}${L('Energia', eur(c.energy))}${L('Desgaste da máquina', eur(c.machine))}${L(`Mão de obra (${eur(c.rate)}/h)`, eur(c.labor))}${L('Margem p/ falhas', eur(c.failure))}${L('Extras', eur(c.extras))}<hr>${L('Custo total', eur(c.cost))}${L('Preço antes de descontos', eur(c.gross))}${c.discount ? L('Descontos', '−' + eur(c.discount), 'disc') : ''}${L('Valor sem IVA', eur(c.net))}${L('Lucro', eur(c.profit), c.profit < 0 ? 'neg' : 'sub')}${L(`IVA (${num(s.vat)}%)`, eur(c.vat))}<hr>${L('Total', eur(c.total), 'total')}`;
+    $('#q-sum').innerHTML = `<div class="eyebrow">Cálculo</div>${L('Filamento', eur(c.material))}${L(`${num(c.grams)} g · ${hm(c.hours)} de máquina`, '', 'sub')}${L('Energia', eur(c.energy))}${L('Desgaste da máquina', eur(c.machine))}${L(`Mão de obra (${eur(c.rate)}/h)`, eur(c.labor))}${L('Margem p/ falhas', eur(c.failure))}${L('Extras', eur(c.extras))}<hr>${L('Custo total', eur(c.cost))}${L('Preço antes de descontos', eur(c.gross))}${c.discount ? L('Descontos', '−' + eur(c.discount), 'disc') : ''}${L('Valor sem IVA', eur(c.net))}${L('Lucro', eur(c.profit), c.profit < 0 ? 'neg' : 'sub')}${L(`IVA (${num(s.vat)}%)`, eur(c.vat))}<hr>${L('Total', eur(c.total), 'total')}${(() => { const ps = paySplit(n, c.total); return `<hr>${ps.pAdj > 0 ? L(`Na adjudicação (${pctTxt(ps.pAdj)})`, eur(ps.adj)) : ''}${ps.pEnt > 0 ? L(`Na entrega (${pctTxt(ps.pEnt)})`, eur(ps.ent)) : ''}`; })()}`;
+    { const ps = paySplit(n, c.total); $('#q-ent').textContent = `${pctTxt(ps.pEnt)} · ${eur(ps.ent)}`; document.querySelectorAll('[data-act="pay-preset"]').forEach(b => b.setAttribute('aria-pressed', String(+b.dataset.v === ps.pAdj))); }
    },
    handler: async () => {
     const n = read();
@@ -1832,7 +1853,7 @@ function quoteText(q){
     clientName(q) ? `Cliente: ${clientName(q)}${cl && cl.nif ? ` (NIF ${cl.nif})` : ''}` : '', '',
     ...(q.items || []).map((it, i) => { const l = c.lines[i]; return `• ${it.desc || 'Peça'} — ${it.qty} un. × ${eur(l.unitPrice)}${l.disc ? ` − ${num(it.disc, 1)}% desconto` : ''} = ${eur(l.net)}`; }),
     c.extraLaborPrice ? `• Mão de obra adicional — ${eur(c.extraLaborPrice)}` : '', c.extras ? `• Extras — ${eur(c.extras)}` : '', '',
-    c.discount ? `Desconto total: ${eur(c.discount)}` : '', `Valor sem IVA: ${eur(c.net)}`, q.vat ? `IVA (${s.vat}%): ${eur(c.vat)}` : '', `Total: ${eur(c.total)}`, q.notes ? '\n' + q.notes : ''];
+    c.discount ? `Desconto total: ${eur(c.discount)}` : '', `Valor sem IVA: ${eur(c.net)}`, q.vat ? `IVA (${s.vat}%): ${eur(c.vat)}` : '', `Total: ${eur(c.total)}`, payText(paySplit(q, c.total)), q.notes ? '\n' + q.notes : ''];
   return lines.filter((l, i) => l !== '' || (i > 0 && lines[i - 1] !== '')).join('\n').replace(/\n{3,}/g, '\n\n').trim();
 }
 
@@ -1937,6 +1958,7 @@ document.addEventListener('click', async e => {
       case 'quote-part': { const p = find('parts'); quoteForm(null, {clientId:p.clientId || '', partIds:[p.id]}); break; }
       case 'rm-row': b.closest('.qitem, .item, .task-row').remove(); onInput && onInput(); break;
       case 'fil-add': filAdd(b.dataset.pre); break;
+      case 'pay-preset': { const el = document.getElementById('q-adj'); if (el){ el.value = b.dataset.v; onInput && onInput(); } break; }
       case 'fil-rm': filRm(b); break;
       case 'quote-pdf': {
         const n = quoteForm.read();
@@ -1981,7 +2003,7 @@ document.addEventListener('submit', async e => {
   if (e.target.id === 'settings-form'){
     const s = settings(), mp = {};
     document.querySelectorAll('[data-mat]').forEach(i => mp[i.dataset.mat] = parseFloat(i.value) || 0);
-    try{ await putSettings({...s, company:val('s-company').trim() || 'Oficina 3D', kwh:numv('s-kwh'), labor:numv('s-labor'), margin:numv('s-margin'), failure:numv('s-failure'), vat:numv('s-vat'), low:numv('s-low'), delivery:numv('s-delivery'), matPrices:mp, cNif:val('s-nif').trim(), cPhone:val('s-phone').trim(), cEmail:val('s-email').trim(), cWeb:val('s-web').trim(), cAddress:val('s-address').trim(), cIban:val('s-iban').trim(), pdfColor:val('s-color') || '#0A7470', cond:val('s-cond').trim(), logo:st.logo !== undefined ? st.logo : (s.logo || '')}); st.logo = undefined; toast('Definições guardadas.'); }catch(err){}
+    try{ await putSettings({...s, company:val('s-company').trim() || 'Oficina 3D', kwh:numv('s-kwh'), labor:numv('s-labor'), margin:numv('s-margin'), failure:numv('s-failure'), vat:numv('s-vat'), low:numv('s-low'), delivery:numv('s-delivery'), payAdj:Math.min(100, Math.max(0, numv('s-payadj'))), matPrices:mp, cNif:val('s-nif').trim(), cPhone:val('s-phone').trim(), cEmail:val('s-email').trim(), cWeb:val('s-web').trim(), cAddress:val('s-address').trim(), cIban:val('s-iban').trim(), pdfColor:val('s-color') || '#0A7470', cond:val('s-cond').trim(), logo:st.logo !== undefined ? st.logo : (s.logo || '')}); st.logo = undefined; toast('Definições guardadas.'); }catch(err){}
   }
 });
 document.addEventListener('input', e => {

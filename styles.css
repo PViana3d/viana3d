@@ -202,6 +202,9 @@ dialog::backdrop{background:rgba(10,16,14,.5)}
 .usel{display:flex;gap:5px;align-items:center;white-space:nowrap}
 .usel + .usel{margin-top:2px}
 .qitem,.plrow{grid-auto-flow:row dense}
+/* pagamento no orçamento */
+.pay-box{display:flex;flex-direction:column;gap:8px}
+.pay-ent{padding:8px 10px;border:1px dashed var(--line);border-radius:6px;font-family:var(--f-mono);font-variant-numeric:tabular-nums;background:var(--sunk)}
 /* cópia de segurança */
 .radios{display:flex;flex-direction:column;gap:8px}
 .radios .check{align-items:flex-start;font-size:.9rem;line-height:1.4}
