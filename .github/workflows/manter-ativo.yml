@@ -1,0 +1,49 @@
+name: Manter o Supabase ativo
+
+# O plano gratuito do Supabase pausa o projeto ao fim de 7 dias sem utilização.
+# Esta tarefa faz uma consulta mínima à base de dados todos os dias (não lê dados).
+# Se falhar, o GitHub envia um email ao dono do repositório.
+
+on:
+  schedule:
+    - cron: '17 5 * * *'      # todos os dias às 05:17 (UTC)
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/manter-ativo.yml']
+
+permissions:
+  contents: read
+  actions: write               # para impedir que o GitHub desligue esta tarefa por falta de atividade
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: config.js
+          sparse-checkout-cone-mode: false
+      - name: Consultar a base de dados
+        env:
+          VAR_URL: ${{ vars.SUPABASE_URL }}
+          VAR_KEY: ${{ vars.SUPABASE_ANON_KEY }}
+        run: |
+          url="$VAR_URL"; key="$VAR_KEY"
+          if [ -z "$url" ] || [ -z "$key" ]; then
+            url=$(grep -oE "supabaseUrl: *'[^']+'" config.js | sed -E "s/.*'([^']+)'/\1/")
+            key=$(grep -oE "supabaseAnonKey: *'[^']+'" config.js | sed -E "s/.*'([^']+)'/\1/")
+          fi
+          for i in 1 2 3; do
+            code=$(curl -s -o resposta.txt -w '%{http_code}' -X POST "$url/rest/v1/rpc/ping" \
+              -H "apikey: $key" -H "Authorization: Bearer $key" -H 'Content-Type: application/json' -d '{}')
+            if [ "$code" = "200" ]; then echo "Supabase ativo: $(cat resposta.txt)"; exit 0; fi
+            echo "Tentativa $i falhou (HTTP $code): $(cat resposta.txt)"; sleep 30
+          done
+          echo "::error::O Supabase não respondeu. Pode estar pausado: reative o projeto em https://supabase.com/dashboard"
+          exit 1
+      - name: Manter esta tarefa ligada
+        # Em repositórios públicos, o GitHub desliga tarefas agendadas após 60 dias sem alterações no código.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api -X PUT "repos/${{ github.repository }}/actions/workflows/manter-ativo.yml/enable" || true

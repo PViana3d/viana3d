@@ -32,9 +32,9 @@ const CFG = window.APP_CONFIG || {};
 let sb = null, WS = null, ME = null, ROLE = 'membro', online = navigator.onLine, channel = null;
 const cacheKey = () => `g3d-cache-${WS}`;
 function saveCache(){ try{ localStorage.setItem(cacheKey(), JSON.stringify(S)); }catch(e){} }
-function loadCache(){ try{ const d = JSON.parse(localStorage.getItem(cacheKey()) || 'null'); if (d){ COLS.concat('settings').forEach(k => { if (d[k]) S[k] = d[k]; }); return true; } }catch(e){} return false; }
+function loadCache(){ try{ const d = JSON.parse(localStorage.getItem(cacheKey()) || 'null'); if (d){ COLS.concat('settings', 'backup').forEach(k => { if (d[k]) S[k] = d[k]; }); return true; } }catch(e){} return false; }
 function applyRow(col, id, data){
-  if (col === 'config'){ if (id === 'settings') S.settings = data ? cp(data) : cp(DEF); return; }
+  if (col === 'config'){ if (id === 'settings') S.settings = data ? cp(data) : cp(DEF); else if (id === 'backup') S.backup = data ? cp(data) : null; return; }
   if (!S[col]) return;
   const a = S[col], i = a.findIndex(x => x.id === id);
   if (!data){ if (i >= 0) a.splice(i, 1); return; }
@@ -66,12 +66,12 @@ let rTimer = null;
 function scheduleRender(){ clearTimeout(rTimer); rTimer = setTimeout(render, 40); }
 
 async function refetch(){
-  const fresh = {settings:cp(DEF)}; COLS.forEach(c => fresh[c] = []);
+  const fresh = {settings:cp(DEF), backup:null}; COLS.forEach(c => fresh[c] = []);
   for (let from = 0; ; from += 1000){
     const {data, error} = await sb.from('docs').select('collection,id,data').eq('workspace_id', WS).order('collection').order('id').range(from, from + 999);
     if (error) throw error;
     data.forEach(r => {
-      if (r.collection === 'config'){ if (r.id === 'settings') fresh.settings = r.data; }
+      if (r.collection === 'config'){ if (r.id === 'settings') fresh.settings = r.data; else if (r.id === 'backup') fresh.backup = r.data; }
       else if (fresh[r.collection]) fresh[r.collection].push({...r.data, id:r.id});
     });
     if (data.length < 1000) break;
@@ -87,6 +87,81 @@ function subscribe(){
       applyRow(row.collection, row.id, p.eventType === 'DELETE' ? null : row.data); saveCache(); scheduleRender();
     })
     .subscribe(status => { if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') setTimeout(subscribe, 5000); });
+}
+
+/* ---------- cópia de segurança ---------- */
+const COL_NAMES = {quotes:'Orçamentos', orders:'Encomendas', plan:'Impressões planeadas', jobs:'Impressões registadas', parts:'Peças', clients:'Clientes', spools:'Bobines', purchases:'Compras', stock:'Materiais em stock', printers:'Impressoras', maint:'Manutenções', config:'Definições'};
+async function fetchAllRows(){
+  const rows = [];
+  for (let from = 0; ; from += 1000){
+    const {data, error} = await sb.from('docs').select('collection,id,data').eq('workspace_id', WS).order('collection').order('id').range(from, from + 999);
+    if (error) throw error;
+    rows.push(...data);
+    if (data.length < 1000) break;
+  }
+  return rows;
+}
+const countBy = rows => rows.reduce((a, r) => (a[r.collection] = (a[r.collection] || 0) + 1, a), {});
+const backupName = (suffix = '') => `${(settings().company || 'viana3d').normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^A-Za-z0-9]+/g, '-').replace(/^-|-$/g, '').toLowerCase() || 'viana3d'}-copia-${today()}${suffix}.json`;
+// descarrega todos os dados da empresa (diretamente do servidor) num ficheiro JSON
+async function exportBackup({silent = false, suffix = ''} = {}){
+  let rows;
+  try{ rows = await fetchAllRows(); }
+  catch(e){ toast('Sem ligação ao servidor: não foi possível fazer a cópia.'); return false; }
+  rows = rows.filter(r => !(r.collection === 'config' && r.id === 'backup'));
+  const file = {app:'viana3d', formato:1, criadaEm:new Date().toISOString(), empresa:settings().company || '', por:ME ? ME.email : '', registos:rows.length, porColecao:countBy(rows), docs:rows};
+  await downloads.save({filename:backupName(suffix), data:JSON.stringify(file), type:'application/json'});
+  if (!silent){
+    try{ await put('config', {id:'backup', date:today(), at:new Date().toISOString(), by:ME ? ME.email : '', registos:rows.length}); }catch(e){}
+    toast(`Cópia descarregada: ${rows.length} registos. Guarde o ficheiro num sítio seguro (ex.: OneDrive, Google Drive).`);
+  }
+  return true;
+}
+function backupAge(){ const d = S.backup && S.backup.date; return d ? daysBetween(d, today()) : null; }
+function backupPanel(){
+  const age = backupAge(), b = S.backup, owner = ROLE === 'dono';
+  return `<section class="panel"><div class="panel-h"><h2>Cópia de segurança</h2>${age === null ? '<span class="pill warn">Nunca foi feita</span>' : `<span class="pill ${age > 14 ? 'bad' : age > 7 ? 'warn' : 'ok'}">Última há ${age === 0 ? 'menos de 1 dia' : age === 1 ? '1 dia' : age + ' dias'}</span>`}</div>
+    <p class="muted" style="margin:0">O plano gratuito do Supabase não guarda cópias dos seus dados. Descarregue uma cópia pelo menos uma vez por semana e guarde-a fora deste computador (OneDrive, Google Drive, pen USB).${b ? ` Última: ${fmtDate(b.date)}${b.by ? ' por ' + esc(b.by) : ''}, ${num(b.registos || 0)} registos.` : ''}</p>
+    <div class="actions"><button type="button" class="btn primary" data-act="backup-export">Descarregar cópia agora</button>${owner ? '<label class="btn file-btn">Repor a partir de uma cópia…<input type="file" id="backup-file" accept=".json,application/json"></label>' : ''}</div>
+    ${owner ? '' : '<p class="hint muted" style="margin:0">Só o dono da conta pode repor uma cópia.</p>'}
+  </section>`;
+}
+async function importBackupFile(file){
+  let data;
+  try{ data = JSON.parse(await file.text()); }catch(e){ toast('Este ficheiro não é uma cópia válida (não consegui ler o JSON).'); return; }
+  if (!data || data.app !== 'viana3d' || !Array.isArray(data.docs)){ toast('Este ficheiro não é uma cópia de segurança desta aplicação.'); return; }
+  const docs = data.docs.filter(r => r && typeof r.collection === 'string' && typeof r.id === 'string' && r.data && typeof r.data === 'object' && (COLS.includes(r.collection) || (r.collection === 'config' && r.id === 'settings')));
+  if (!docs.length){ toast('A cópia não tem registos.'); return; }
+  let cur; try{ cur = countBy((await fetchAllRows()).filter(r => !(r.collection === 'config' && r.id === 'backup'))); }catch(e){ toast('Sem ligação ao servidor.'); return; }
+  const inFile = countBy(docs), keys = Object.keys(COL_NAMES).filter(k => inFile[k] || cur[k]);
+  openDlg('Repor cópia de segurança', `
+    <p style="margin:0">Cópia de <b>${data.criadaEm ? new Date(data.criadaEm).toLocaleString('pt-PT') : '?'}</b>${data.empresa ? ` · ${esc(data.empresa)}` : ''}${data.por ? ` · feita por ${esc(data.por)}` : ''}</p>
+    <div class="tbl-wrap"><table><thead><tr><th>Dados</th><th class="r">Na cópia</th><th class="r">Agora</th></tr></thead><tbody>${keys.map(k => `<tr><td>${COL_NAMES[k]}</td><td class="r num">${inFile[k] || 0}</td><td class="r num">${cur[k] || 0}</td></tr>`).join('')}</tbody></table></div>
+    <div class="radios"><span class="eyebrow">Como repor</span>
+      <label class="check"><input type="radio" name="bk-mode" value="juntar" checked> <span><b>Juntar</b>: repõe os registos da cópia e mantém os que foram criados depois dela.</span></label>
+      <label class="check"><input type="radio" name="bk-mode" value="substituir"> <span><b>Substituir tudo</b>: os dados ficam exatamente como na cópia; o que não estiver na cópia é apagado.</span></label></div>
+    <p class="ctx">Antes de repor, é descarregada automaticamente uma cópia do estado atual, para poder voltar atrás.</p>`,
+  {submit:'Repor cópia', handler: async () => {
+    const mode = (document.querySelector('input[name="bk-mode"]:checked') || {}).value || 'juntar';
+    const btn = document.querySelector('#dlg-form button[type=submit]'); if (btn){ btn.disabled = true; btn.textContent = 'A repor…'; }
+    if (!(await exportBackup({silent:true, suffix:'-antes-de-repor'}))) return;
+    try{
+      const rows = docs.map(r => ({workspace_id:WS, collection:r.collection, id:r.id, data:r.data}));
+      for (let i = 0; i < rows.length; i += 200){ const {error} = await sb.from('docs').upsert(rows.slice(i, i + 200)); if (error) throw error; }
+      let removed = 0;
+      if (mode === 'substituir'){
+        const keep = new Set(docs.map(r => r.collection + '/' + r.id));
+        const extra = (await fetchAllRows()).filter(r => !keep.has(r.collection + '/' + r.id) && !(r.collection === 'config' && r.id === 'backup'));
+        const byCol = {}; extra.forEach(r => (byCol[r.collection] = byCol[r.collection] || []).push(r.id));
+        for (const [c, ids] of Object.entries(byCol)) for (let i = 0; i < ids.length; i += 200){
+          const {error} = await sb.from('docs').delete().eq('workspace_id', WS).eq('collection', c).in('id', ids.slice(i, i + 200)); if (error) throw error;
+        }
+        removed = extra.length;
+      }
+      await refetch(); closeDlg(); render();
+      toast(`Cópia reposta: ${rows.length} registos${removed ? `, ${removed} apagados` : ''}.`);
+    }catch(e){ await refetch().catch(() => {}); render(); toast('A reposição falhou a meio: ' + (e.message || e) + '. Pode repor a cópia "antes-de-repor" que foi descarregada.'); }
+  }});
 }
 
 /* ---------- início de sessão ---------- */
@@ -332,6 +407,10 @@ function alerts(){
     if (s.toPlan) out.push({cls:'info', title:`Encomenda ${o.number}: ${s.toPlan} unidades por planear`, sub:`Prazo ${fmtDate(o.due)}`, href:'#producao'}); });
   S.quotes.filter(q => q.status === 'aceite' && !orderOf(q)).forEach(q => out.push({cls:'info', title:`Orçamento ${q.number} aceite`, sub:'Ainda não foi convertido em encomenda', href:'#encomendas'}));
   S.stock.filter(stockLow).forEach(x => out.push({cls:(+x.qty || 0) <= 0 ? 'bad' : 'warn', title:`${x.name} (${x.category || 'material'})`, sub:`Stock baixo: ${qtyTxt(x.qty, x.unit)} (mínimo ${qtyTxt(x.min, x.unit)})`, href:'#compras'}));
+  if (S.quotes.length + S.parts.length + S.spools.length + S.jobs.length > 0){
+    const age = backupAge();
+    if (age === null || age > 7) out.push({cls:age === null || age > 14 ? 'warn' : 'info', title:'Cópia de segurança dos dados', sub:age === null ? 'Ainda não descarregou nenhuma cópia' : `A última cópia foi há ${age} dias`, href:'#definicoes'});
+  }
   S.purchases.filter(p => p.status !== 'recebida' && p.date && p.date <= addDaysStr(today(), -7)).forEach(p => out.push({cls:'info', title:`Compra ${p.number} por receber`, sub:`${p.supplier || 'Sem fornecedor'} · encomendada a ${fmtDate(p.date)}`, href:'#compras'}));
   const lateLim = Date.now() - 30 * 60e3;
   S.plan.filter(p => p.status === 'planeada' && p.start && new Date(p.start) < lateLim).forEach(p => out.push({cls:'warn', title:`Impressão atrasada: ${p.desc}`, sub:`Devia ter começado ${fmtDT(p.start)} · ${(S.printers.find(x => x.id === p.printerId) || {}).name || ''}`, href:'#producao'}));
@@ -358,7 +437,7 @@ const current = () => { const h = location.hash.slice(1); return VIEWS.some(v =>
 
 function renderNav(){
   const v = current(), a = loaded ? alerts() : [];
-  const cnt = {bobines: a.filter(x => x.href === '#bobines').length, manutencao: a.filter(x => x.href === '#manutencao').length, encomendas: a.filter(x => x.href === '#encomendas' && x.cls !== 'info').length, producao: a.filter(x => x.href === '#producao').length, compras: a.filter(x => x.href === '#compras' && x.cls !== 'info').length};
+  const cnt = {bobines: a.filter(x => x.href === '#bobines').length, manutencao: a.filter(x => x.href === '#manutencao').length, encomendas: a.filter(x => x.href === '#encomendas' && x.cls !== 'info').length, producao: a.filter(x => x.href === '#producao').length, compras: a.filter(x => x.href === '#compras' && x.cls !== 'info').length, definicoes: a.filter(x => x.href === '#definicoes' && x.cls !== 'info').length};
   $('#nav').innerHTML = VIEWS.map(([k, l]) => `<a href="#${k}" ${k === v ? 'aria-current="page"' : ''}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${ICONS[k]}</svg>${l}${cnt[k] ? `<span class="count">${cnt[k]}</span>` : ''}</a>`).join('');
   $('#brandName').textContent = settings().company || 'Oficina 3D';
   $('#storeNote').innerHTML = ME ? `<span class="who">${esc(ME.email)}</span><span class="conn ${online ? 'on' : 'off'}">${online ? 'Ligado' : 'Sem ligação'}</span><button type="button" class="linkbtn2" data-act="logout">Terminar sessão</button>` : '';
@@ -528,6 +607,7 @@ function vSettings(){
     <div class="field"><label for="s-cond">Condições (aparecem no fim do orçamento)</label><textarea id="s-cond" style="min-height:90px">${esc(s.cond)}</textarea></div>
     <div class="actions"><button class="btn primary" type="submit">Guardar definições</button></div>
   </form>
+  ${backupPanel()}
   <section class="panel"><div class="panel-h"><h2>Equipa</h2></div><p class="muted" style="margin:0">Todas as pessoas da equipa veem e alteram os mesmos dados, em qualquer aparelho.</p><div id="team"><p class="muted">A carregar…</p></div></section>
   <section class="panel"><div class="panel-h"><h2>Conta</h2></div><p style="margin:0">Sessão iniciada como <b>${esc(ME ? ME.email : '')}</b>.</p><div class="actions"><button type="button" class="btn" data-act="logout">Terminar sessão</button></div></section>`;
 }
@@ -1823,6 +1903,7 @@ document.addEventListener('click', async e => {
       case 'plan-done': finishPlan(find('plan')); break;
       case 'compact': await compactQueue(id); break;
       case 'logout': await signOut(); break;
+      case 'backup-export': await exportBackup(); break;
       case 'team-invite': case 'team-uninvite': case 'team-rm': await teamAction(a, id); break;
       case 'new-purchase': purchaseForm(); break;
       case 'edit-purchase': purchaseForm(find('purchases')); break;
@@ -1916,6 +1997,7 @@ document.addEventListener('change', e => {
   if (e.target.id === 'f-printer'){ st.repPrinter = e.target.value; render(); }
   if (e.target.id === 'f-part-client'){ st.partClient = e.target.value; render(); }
   if (e.target.id === 's-logo' && e.target.files[0]) readLogo(e.target.files[0]);
+  if (e.target.id === 'backup-file' && e.target.files[0]){ const f = e.target.files[0]; e.target.value = ''; importBackupFile(f); }
   if (e.target.id === 'm-printer'){ $('#m-task').innerHTML = maintForm.taskOpts(e.target.value).map(([k, l]) => `<option value="${esc(k)}">${esc(l)}</option>`).join(''); const p = S.printers.find(x => x.id === e.target.value); $('#m-hours').value = p ? p.hours || 0 : 0; onInput && onInput(); }
 });
 ['dragenter', 'dragover'].forEach(t => document.addEventListener(t, e => { const z = e.target.closest && e.target.closest('#g-drop'); if (e.dataTransfer && [...(e.dataTransfer.types || [])].includes('Files')){ e.preventDefault(); if (z) z.classList.add('over'); } }));

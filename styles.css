@@ -202,6 +202,10 @@ dialog::backdrop{background:rgba(10,16,14,.5)}
 .usel{display:flex;gap:5px;align-items:center;white-space:nowrap}
 .usel + .usel{margin-top:2px}
 .qitem,.plrow{grid-auto-flow:row dense}
+/* cópia de segurança */
+.radios{display:flex;flex-direction:column;gap:8px}
+.radios .check{align-items:flex-start;font-size:.9rem;line-height:1.4}
+.radios input{width:auto;margin-top:3px;flex:none}
 /* manutenção */
 .task-row{display:flex;flex-wrap:wrap;gap:8px;align-items:flex-end;padding-bottom:8px;border-bottom:1px dashed var(--line)}
 .task-row > .field:first-child{flex:2 1 200px}
