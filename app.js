@@ -417,6 +417,13 @@ function alerts(){
     if (s.late) out.push({cls:'bad', title:`Encomenda ${o.number} · ${clientName(o) || 'sem cliente'}`, sub:`Prazo ultrapassado (${fmtDate(o.due)}) · ${s.done}/${s.total} unidades feitas`, href:'#encomendas'});
     else if (dl <= 2) out.push({cls:'warn', title:`Encomenda ${o.number} · ${clientName(o) || 'sem cliente'}`, sub:`Entrega ${dl === 0 ? 'hoje' : 'em ' + dl + ' dias úteis'} · ${s.done}/${s.total} unidades feitas`, href:'#encomendas'});
     if (s.toPlan) out.push({cls:'info', title:`Encomenda ${o.number}: ${s.toPlan} unidades por planear`, sub:`Prazo ${fmtDate(o.due)}`, href:'#producao'}); });
+  S.orders.forEach(o => {
+    const s0 = orderState(o); if (s0.status === 'cancelada') return;
+    const mo = orderMoney(o); if (!(mo.total > 0)) return;
+    if (mo.due > 0 && (s0.status === 'pronta' || s0.status === 'entregue')) out.push({cls:'warn', title:`Encomenda ${o.number}: faltam ${eur(mo.due)}`, sub:`${clientName(o) || 'Sem cliente'} · ${s0.status === 'entregue' ? 'entregue' : 'pronta'} e ainda não paga na totalidade`, href:'#encomendas'});
+    else if (mo.adjDue > 0 && mo.ps.pAdj > 0 && s0.open) out.push({cls:'info', title:`Encomenda ${o.number}: adjudicação por receber`, sub:`${eur(mo.adjDue)} (${pctTxt(mo.ps.pAdj)}) · ${clientName(o) || 'sem cliente'}`, href:'#encomendas'});
+    if (s0.status === 'entregue' && !o.invoice) out.push({cls:'info', title:`Encomenda ${o.number} entregue sem fatura`, sub:'Registe o número da fatura na encomenda', href:'#encomendas'});
+  });
   S.quotes.filter(q => q.status === 'aceite' && !orderOf(q)).forEach(q => out.push({cls:'info', title:`Orçamento ${q.number} aceite`, sub:'Ainda não foi convertido em encomenda', href:'#encomendas'}));
   S.stock.filter(stockLow).forEach(x => out.push({cls:(+x.qty || 0) <= 0 ? 'bad' : 'warn', title:`${x.name} (${x.category || 'material'})`, sub:`Stock baixo: ${qtyTxt(x.qty, x.unit)} (mínimo ${qtyTxt(x.min, x.unit)})`, href:'#compras'}));
   if (S.quotes.length + S.parts.length + S.spools.length + S.jobs.length > 0){
@@ -483,7 +490,7 @@ function vPainel(){
   const accepted = S.quotes.filter(q => q.status === 'aceite' && monthOf(q.date) === m).reduce((x, q) => x + calcQuote(q).total, 0);
   const recent = [...S.jobs].sort((x, y) => (y.date || '').localeCompare(x.date || '')).slice(0, 6);
   const noData = !S.spools.length && !S.printers.length && !S.jobs.length && !S.quotes.length;
-  return `<div class="head"><div><div class="eyebrow">${esc(monthName)}</div><h1>Painel</h1><p>Orçamentos aceites este mês: <b class="num">${eur(accepted)}</b></p></div>
+  return `<div class="head"><div><div class="eyebrow">${esc(monthName)}</div><h1>Painel</h1><p>Orçamentos aceites este mês: <b class="num">${eur(accepted)}</b> · por receber: <b class="num">${eur(S.orders.filter(o => orderState(o).status !== 'cancelada').reduce((x, o) => x + orderMoney(o).due, 0))}</b></p></div>
     <div class="actions"><button class="btn" data-act="new-job">Registar impressão</button><button class="btn primary" data-act="new-quote">Novo orçamento</button></div></div>
     ${noData ? `<div class="empty"><b>Ainda não há dados.</b><span>Comece por adicionar as suas impressoras e bobines; depois registe impressões e crie orçamentos.</span><div class="actions"><button class="btn" data-act="new-printer">Adicionar impressora</button><button class="btn" data-act="new-spool">Adicionar bobine</button><button class="btn ghost" data-act="sample">Carregar dados de exemplo</button></div></div>` : ''}
     ${kpiRow(s)}
@@ -577,7 +584,8 @@ function vReports(){
     </div>
     ${jobs.length ? `<div class="tbl-wrap"><table><thead><tr><th>Data</th><th>Peça</th><th>Cliente</th><th>Impressora</th><th>Filamento</th><th class="r">Gramas</th><th class="r">Tempo</th><th>Resultado</th><th></th></tr></thead><tbody>
       ${jobs.map(j => `<tr><td>${fmtDate(j.date)}</td><td>${esc(j.name)}${j.notes ? `<br><small class="muted">${esc(j.notes)}</small>` : ''}</td><td>${esc(clientName(j) || '—')}</td><td>${esc(pn(j.printerId))}</td><td>${usesOf(j).map(u => `<span class="usel">${swatch(spoolHex(u.spoolId))}${esc(sn(u.spoolId) || 'Sem bobine')}${usesOf(j).length > 1 ? ` <small class="muted num">${num(u.grams)} g</small>` : ''}</span>`).join('') || '—'}</td><td class="r num">${num(sumG(usesOf(j)))}</td><td class="r num">${hm(j.hours)}</td><td><span class="pill ${j.result === 'sucesso' ? 'ok' : 'bad'}">${j.result === 'sucesso' ? 'Sucesso' : 'Falha'}</span>${j.result === 'falha' && j.reason ? `<br><small class="muted">${esc(j.reason)}</small>` : ''}</td><td class="r" style="white-space:nowrap"><button class="btn ghost sm" data-act="edit-job" data-id="${j.id}">Editar</button><button class="btn ghost sm danger" data-act="del" data-col="jobs" data-id="${j.id}">Eliminar</button></td></tr>`).join('')}
-    </tbody></table></div>` : '<div class="empty">Sem impressões registadas neste período.<button class="btn" data-act="new-job">Registar impressão</button></div>'}`;
+    </tbody></table></div>` : '<div class="empty">Sem impressões registadas neste período.<button class="btn" data-act="new-job">Registar impressão</button></div>'}
+    ${profitTable(st.month)}`;
 }
 
 function vSettings(){
@@ -695,7 +703,7 @@ async function convertQuote(q){
   if (!(q.items || []).length){ toast('O orçamento não tem peças.'); return; }
   const c = calcQuote(q);
   const o = {id:uid(), number:nextNumber(S.orders, 'ENC'), quoteId:q.id, quoteNumber:q.number, clientId:q.clientId || '', client:clientName(q), date:today(),
-    due: addBusinessDays(today(), +q.deliveryDays || 0), closed:'', notes:q.notes || '', total:c.total, net:c.net, payAdj:paySplit(q, c.total).pAdj, printerId:q.printerId || '',
+    due: addBusinessDays(today(), +q.deliveryDays || 0), closed:'', notes:q.notes || '', total:c.total, net:c.net, plannedCost:r2(c.cost), plannedProfit:r2(c.profit), payAdj:paySplit(q, c.total).pAdj, printerId:q.printerId || '',
     items:(q.items || []).map(it => withFils({id:it.id, partId:it.partId || '', desc:it.desc, ref:it.ref || '', hours:+it.hours || 0, qty:+it.qty || 1, thumb:it.thumb || ''}, filsOf(it)))};
   if (JSON.stringify(o).length > 200000) o.items.forEach(it => { it.thumb = ''; });
   if (q.status !== 'aceite') await put('quotes', {...q, status:'aceite'});
@@ -703,6 +711,76 @@ async function convertQuote(q){
   toast(`Encomenda ${o.number} criada.`);
   S.orders.some(x => x.id === o.id) || S.orders.push(o);
   orderForm(o);
+}
+
+/* ---------- pagamentos, faturas e lucro real ---------- */
+const PMETHODS = ['Transferência', 'MB Way', 'Multibanco', 'Numerário', 'Outro'];
+function orderMoney(o){
+  const total = r2(+o.total || 0), ps = paySplit(o, total);
+  const paid = r2((o.payments || []).reduce((a, p) => a + (+p.amount || 0), 0));
+  const due = r2(Math.max(0, total - paid)), adjDue = r2(Math.max(0, ps.adj - paid));
+  const state = total > 0 && paid >= total - 0.004 ? 'pago' : paid > 0.004 ? 'parcial' : 'por pagar';
+  return {total, ps, paid, due, adjDue, state};
+}
+const PAYSTATE = {pago:['Pago', 'ok'], parcial:['Pago em parte', 'warn'], 'por pagar':['Por pagar', '']};
+// custo real de uma encomenda: impressões registadas (incluindo falhadas) + mão de obra e extras do orçamento + materiais do stock gastos
+function orderResult(o){
+  const s = settings(), q = S.quotes.find(x => x.id === o.quoteId);
+  const rate = q && q.laborRate != null && q.laborRate !== '' ? +q.laborRate : s.labor;
+  const jobs = S.jobs.filter(j => j.orderId === o.id);
+  let mat = 0, energy = 0, wear = 0, failed = 0, nFail = 0;
+  jobs.forEach(j => {
+    const m = usesOf(j).reduce((a, u) => a + u.grams / 1000 * spoolEurKg(S.spools.find(x => x.id === u.spoolId)), 0);
+    const pr = S.printers.find(x => x.id === j.printerId) || {};
+    const e = (+j.hours || 0) * (+pr.watts || 0) / 1000 * s.kwh, w = (+j.hours || 0) * (pr.price && pr.life ? pr.price / pr.life : 0);
+    mat += m; energy += e; wear += w;
+    if (j.result === 'falha'){ failed += m + e + w; nFail++; }
+  });
+  const stockCost = jobs.reduce((a, j) => a + (j.stockUses || []).reduce((b, u) => b + (+u.qty || 0) * (+u.cost || 0), 0), 0) + (o.stockUses || []).reduce((b, u) => b + (+u.qty || 0) * (+u.cost || 0), 0);
+  const labor = q ? ((q.items || []).reduce((a, it) => a + (+it.laborH || 0) * (+it.qty || 0), 0) + (+q.laborH || 0)) * rate : 0;
+  const extras = q ? +q.extras || 0 : 0;
+  const cost = mat + energy + wear + labor + extras + stockCost;
+  const revenue = o.net != null ? +o.net : (q ? calcQuote(q).net : 0);
+  const planned = o.plannedProfit != null ? +o.plannedProfit : (q ? calcQuote(q).profit : null);
+  const profit = revenue - cost;
+  return {revenue, mat, energy, wear, labor, extras, stockCost, failed, nFail, cost, profit, planned, margin:revenue ? profit / revenue * 100 : 0, nJobs:jobs.length};
+}
+// relatório: encomendas com impressões no mês escolhido
+function profitTable(month){
+  const ids = new Set(S.jobs.filter(j => j.orderId && monthOf(j.date) === month).map(j => j.orderId));
+  const list = S.orders.filter(o => ids.has(o.id)).map(o => ({o, r:orderResult(o), m:orderMoney(o)})).sort((a, b) => a.r.margin - b.r.margin);
+  if (!list.length) return '';
+  const t = list.reduce((a, x) => ({rev:a.rev + x.r.revenue, cost:a.cost + x.r.cost, profit:a.profit + x.r.profit, planned:a.planned + (x.r.planned || 0)}), {rev:0, cost:0, profit:0, planned:0});
+  return `<section class="panel"><div class="panel-h"><h2>Lucro por encomenda</h2><span class="muted">encomendas com impressões em ${new Date(month + '-15').toLocaleDateString('pt-PT', {month:'long', year:'numeric'})}</span></div>
+    <div class="tbl-wrap"><table><thead><tr><th>Encomenda</th><th>Cliente</th><th class="r">Valor s/ IVA</th><th class="r">Custo real</th><th class="r">Lucro real</th><th class="r">Previsto</th><th class="r">Margem</th><th>Pagamento</th></tr></thead><tbody>
+      ${list.map(({o, r, m}) => `<tr class="click" data-act="edit-order" data-id="${o.id}" tabindex="0"><td class="num">${esc(o.number)}</td><td>${esc(clientName(o) || '—')}</td><td class="r num">${eur(r.revenue)}</td><td class="r num">${eur(r.cost)}${r.nFail ? `<br><small class="muted">${r.nFail} falhada${r.nFail > 1 ? 's' : ''}: ${eur(r.failed)}</small>` : ''}</td><td class="r num"><b class="${r.profit < 0 ? 'neg-txt' : ''}">${eur(r.profit)}</b></td><td class="r num muted">${r.planned != null ? eur(r.planned) : '—'}</td><td class="r num"><span class="pill ${r.profit < 0 ? 'bad' : r.planned != null && r.profit < r.planned - 0.01 ? 'warn' : 'ok'}">${pctTxt(r2(r.margin))}</span></td><td><span class="pill ${PAYSTATE[m.state][1]}">${PAYSTATE[m.state][0]}</span></td></tr>`).join('')}
+      <tr class="tot"><td colspan="2"><b>Total</b></td><td class="r num"><b>${eur(t.rev)}</b></td><td class="r num"><b>${eur(t.cost)}</b></td><td class="r num"><b>${eur(t.profit)}</b></td><td class="r num muted">${eur(t.planned)}</td><td class="r num"><b>${t.rev ? pctTxt(r2(t.profit / t.rev * 100)) : '—'}</b></td><td></td></tr>
+    </tbody></table></div>
+    <p class="hint muted" style="margin:0">Custo real = filamento das impressões registadas (incluindo as falhadas, ao preço de cada bobine) + energia e desgaste das horas reais + mão de obra e extras do orçamento + materiais do stock gastos. Encomendas ordenadas da menor para a maior margem.</p></section>`;
+}
+function moneyPanel(o){
+  const m = orderMoney(o), [pl, pc] = PAYSTATE[m.state];
+  const pays = [...(o.payments || [])].sort((a, b) => (a.date || '').localeCompare(b.date || ''));
+  const next = m.adjDue > 0 ? m.adjDue : m.due;
+  return `<section class="panel money"><div class="panel-h"><h3>Pagamentos</h3><span class="pill ${pc}">${pl}</span></div>
+    <div class="ostrip"><div><span class="eyebrow">Total</span><b class="num">${eur(m.total)}</b></div><div><span class="eyebrow">Recebido</span><b class="num">${eur(m.paid)}</b></div><div><span class="eyebrow">Em dívida</span><b class="num ${m.due > 0 ? 'due' : ''}">${eur(m.due)}</b></div><div><span class="eyebrow">Combinado</span><b class="num" style="font-size:.85rem">${m.ps.pAdj >= 100 ? 'Tudo na adjudicação' : m.ps.pAdj <= 0 ? 'Tudo na entrega' : `${pctTxt(m.ps.pAdj)} adjudicação · ${pctTxt(m.ps.pEnt)} entrega`}</b></div></div>
+    ${pays.length ? `<ul class="alerts">${pays.map(p => `<li><span class="pill ok">${esc(p.kind === 'adjudicacao' ? 'Adjudicação' : p.kind === 'entrega' ? 'Entrega' : 'Pagamento')}</span><div class="txt"><b class="num">${eur(p.amount)}</b> · ${esc(p.method || '')}<small>${fmtDate(p.date)}${p.note ? ' · ' + esc(p.note) : ''}</small></div><button type="button" class="btn ghost sm danger" data-act="pay-rm" data-id="${p.id}">Apagar</button></li>`).join('')}</ul>` : '<p class="muted" style="margin:0">Ainda não registou pagamentos.</p>'}
+    ${m.due > 0 ? `<div class="actions">${m.adjDue > 0 && m.ps.pAdj > 0 && m.ps.pAdj < 100 ? `<button type="button" class="btn sm" data-act="pay-quick" data-kind="adjudicacao" data-v="${m.adjDue}">Recebi a adjudicação (${eur(m.adjDue)})</button>` : ''}<button type="button" class="btn sm" data-act="pay-quick" data-kind="${m.paid > 0 || m.ps.pAdj <= 0 ? 'entrega' : 'adjudicacao'}" data-v="${m.due}">Recebi ${m.paid > 0 ? 'o restante' : 'tudo'} (${eur(m.due)})</button></div>
+    <div class="row pay-add">${F('pa-date', 'Data', inp('pa-date', today(), 'date'))}${F('pa-amount', 'Valor (€)', inp('pa-amount', next, 'number', 'min="0" step="0.01"'))}${F('pa-method', 'Forma', sel('pa-method', PMETHODS.map(x => [x, x]), 'Transferência'))}${F('pa-note', 'Nota', inp('pa-note', '', 'text', 'placeholder="opcional"'))}<div class="field"><label>&nbsp;</label><button type="button" class="btn" data-act="pay-add">Registar pagamento</button></div></div>` : ''}
+    <div class="row">${F('o-inv', 'Nº da fatura', inp('o-inv', o.invoice || '', 'text', 'placeholder="emitida no seu programa de faturação"'))}${F('o-invdate', 'Data da fatura', inp('o-invdate', o.invoiceDate || '', 'date'))}</div>
+    <p class="hint muted" style="margin:0">As faturas têm de ser emitidas num programa certificado pela AT; aqui só fica o número, para controlo.</p>
+  </section>`;
+}
+function resultPanel(o){
+  const r = orderResult(o), L = (l, v, cls = '') => `<div class="l ${cls}"><span>${l}</span><span>${v}</span></div>`;
+  return `<section class="panel"><div class="panel-h"><h3>Lucro real</h3>${r.nJobs ? `<span class="pill ${r.profit < 0 ? 'bad' : r.planned != null && r.profit < r.planned - 0.01 ? 'warn' : 'ok'}">${pctTxt(r2(r.margin))} de margem</span>` : ''}</div>
+    ${r.nJobs ? `<div class="sum result">${L('Valor sem IVA', eur(r.revenue))}${L('Filamento gasto', '−' + eur(r.mat), 'sub')}${L('Energia e desgaste', '−' + eur(r.energy + r.wear), 'sub')}${L('Mão de obra (do orçamento)', '−' + eur(r.labor), 'sub')}${r.extras ? L('Extras', '−' + eur(r.extras), 'sub') : ''}${r.stockCost ? L('Materiais do stock', '−' + eur(r.stockCost), 'sub') : ''}<hr>${L('Lucro real', eur(r.profit), r.profit < 0 ? 'neg total' : 'total')}${r.planned != null ? L('Lucro previsto no orçamento', eur(r.planned), 'sub') : ''}${r.nFail ? L(`Custo das ${r.nFail} impressões falhadas`, eur(r.failed), 'neg') : ''}</div>
+      <p class="hint muted" style="margin:0">Conta com as ${r.nJobs} impressões registadas nesta encomenda (incluindo as falhadas), ao custo real de cada bobine.</p>` : '<p class="muted" style="margin:0">Aparece quando registar impressões desta encomenda.</p>'}
+  </section>`;
+}
+async function addPayment(o, pay){
+  o = cp(o); o.payments = (o.payments || []).concat({id:uid(), date:pay.date || today(), amount:r2(pay.amount), method:pay.method || 'Transferência', kind:pay.kind || '', note:pay.note || ''});
+  await put('orders', o); return o;
 }
 
 function orderForm(o){
@@ -715,14 +793,19 @@ function orderForm(o){
     <div class="tbl-wrap"><table><thead><tr><th></th><th>Peça</th><th class="r">Qtd.</th><th class="r">Feitas</th><th class="r">Planeadas</th><th class="r">Por planear</th><th style="width:120px">Progresso</th></tr></thead><tbody>
       ${stt.items.map(i => `<tr><td style="width:48px">${thumbImg(i.thumb, 36)}</td><td>${esc(i.desc)}${i.ref ? ` <small class="muted mono">${esc(i.ref)}</small>` : ''}<br><small class="muted">${filsOf(i).length > 1 ? filsOf(i).map(f => swatch(matHex(f.mat) || f.hex)).join('') + ' ' : ''}${esc(filsText(i))}</small></td><td class="r num">${i.qty}</td><td class="r num">${i.done}</td><td class="r num">${i.planned}</td><td class="r num">${i.toPlan ? `<b>${i.toPlan}</b>` : '0'}</td><td><div class="bar"><i class="${i.done >= i.qty ? '' : 'info'}" style="width:${Math.min(100, i.done / (i.qty || 1) * 100)}%"></i></div></td></tr>`).join('')}
     </tbody></table></div>
+    <div class="cols">${moneyPanel(o)}${resultPanel(o)}</div>
     ${F('o-notes', 'Notas', `<textarea id="o-notes">${esc(o.notes)}</textarea>`)}
     ${jobs.length ? `<h3>Impressões registadas</h3><ul class="alerts">${jobs.map(j => `<li><span class="pill ${j.result === 'sucesso' ? 'ok' : 'bad'}">${j.result === 'sucesso' ? 'OK' : 'Falha'}</span><div class="txt">${esc(j.name)}<small>${fmtDate(j.date)} · ${j.qty || 1} un. · ${hm(j.hours)} · ${num(j.grams)} g</small></div></li>`).join('')}</ul>` : ''}`,
   {wide:true, extra:`<div class="actions"><button type="button" class="btn danger" data-act="del" data-col="orders" data-id="${o.id}">Eliminar</button>${stt.toPlan && stt.open ? `<button type="button" class="btn" data-act="plan-order" data-id="${o.id}">Planear produção</button>` : ''}</div>`,
-   handler: async () => {
-    Object.assign(o, {date:val('o-date'), due:val('o-due'), closed:val('o-closed'), notes:val('o-notes').trim()});
-    await put('orders', o); closeDlg(); toast('Encomenda guardada.');
-  }});
-  orderForm.save = async () => { Object.assign(o, {date:val('o-date'), due:val('o-due'), closed:val('o-closed'), notes:val('o-notes').trim()}); await put('orders', o); return o; };
+   handler: async () => { await orderForm.save(); closeDlg(); toast('Encomenda guardada.'); }});
+  orderForm.save = async () => {
+    const closed = val('o-closed');
+    Object.assign(o, {date:val('o-date'), due:val('o-due'), closed, notes:val('o-notes').trim(), invoice:val('o-inv').trim(), invoiceDate:val('o-invdate')});
+    if (closed === 'entregue' && !o.deliveredAt) o.deliveredAt = today();
+    if (closed !== 'entregue') o.deliveredAt = o.deliveredAt && closed === '' ? '' : o.deliveredAt;
+    await put('orders', o); return o;
+  };
+  orderForm.current = () => o;
 }
 
 function spoolOptsFor(mat, need){
@@ -859,13 +942,14 @@ function vOrders(){
   const toConvert = S.quotes.filter(q => q.status === 'aceite' && !orderOf(q));
   const chip = (v, l) => `<button class="chip" data-act="filter" data-k="oFilter" data-v="${v}" aria-pressed="${f === v}">${l}</button>`;
   const openVal = S.orders.filter(o => orderState(o).open).reduce((a, o) => a + (+o.total || 0), 0);
-  return `<div class="head"><div><div class="eyebrow">Vendas</div><h1>Encomendas</h1><p>Em curso: <span class="num">${eur(openVal)}</span></p></div></div>
+  const dueAll = S.orders.filter(o => orderState(o).status !== 'cancelada').reduce((a, o) => a + orderMoney(o).due, 0);
+  return `<div class="head"><div><div class="eyebrow">Vendas</div><h1>Encomendas</h1><p>Em curso: <span class="num">${eur(openVal)}</span> · por receber: <span class="num">${eur(dueAll)}</span></p></div></div>
     ${toConvert.length ? `<section class="panel"><div class="panel-h"><h2>Orçamentos aceites por converter</h2></div><ul class="alerts">${toConvert.map(q => `<li><span class="pill ok">Aceite</span><div class="txt">${esc(q.number)} · ${esc(clientName(q) || 'sem cliente')}<small>${eur(calcQuote(q).total)} · prazo ${+q.deliveryDays ? q.deliveryDays + ' dias úteis' : 'não definido'}</small></div><button class="btn sm primary" data-act="convert" data-id="${q.id}">Converter em encomenda</button></li>`).join('')}</ul></section>` : ''}
     <div class="chips">${chip('curso', 'Em curso')}${chip('pronta', 'Prontas')}${chip('entregue', 'Entregues')}${chip('cancelada', 'Canceladas')}${chip('todas', 'Todas')}</div>
-    ${rows.length ? `<div class="tbl-wrap"><table><thead><tr><th>Nº</th><th>Cliente</th><th>Peças</th><th>Prazo</th><th style="width:150px">Produção</th><th>Estado</th><th class="r">Total</th></tr></thead><tbody>
-      ${rows.map(({o, s}) => { const [l, c] = OSTATUS[s.status]; const dl = o.due ? businessDaysBetween(today(), o.due) : null; return `<tr class="click" data-act="edit-order" data-id="${o.id}" tabindex="0"><td class="num">${esc(o.number)}</td><td>${esc(clientName(o) || '—')}</td><td class="muted">${esc(s.items.map(i => `${i.qty}× ${i.desc}`).join(', '))}</td>
+    ${rows.length ? `<div class="tbl-wrap"><table><thead><tr><th>Nº</th><th>Cliente</th><th>Peças</th><th>Prazo</th><th style="width:150px">Produção</th><th>Estado</th><th>Pagamento</th><th class="r">Total</th></tr></thead><tbody>
+      ${rows.map(({o, s}) => { const [l, c] = OSTATUS[s.status]; const mo = orderMoney(o), [pl, pc] = PAYSTATE[mo.state]; const dl = o.due ? businessDaysBetween(today(), o.due) : null; return `<tr class="click" data-act="edit-order" data-id="${o.id}" tabindex="0"><td class="num">${esc(o.number)}</td><td>${esc(clientName(o) || '—')}</td><td class="muted">${esc(s.items.map(i => `${i.qty}× ${i.desc}`).join(', '))}</td>
         <td>${fmtDate(o.due)}${s.late ? '<br><span class="pill bad">Atrasada</span>' : s.open && dl !== null && dl <= 2 ? `<br><span class="pill warn">${dl === 0 ? 'Hoje' : dl + ' dias úteis'}</span>` : ''}</td>
-        <td><div class="bar"><i class="${s.done >= s.total ? '' : 'info'}" style="width:${s.pct * 100}%"></i></div><small class="muted num">${s.done}/${s.total} un.${s.toPlan && s.open ? ` · ${s.toPlan} por planear` : ''}</small></td><td><span class="pill ${c}">${l}</span></td><td class="r num"><b>${eur(o.total)}</b></td></tr>`; }).join('')}
+        <td><div class="bar"><i class="${s.done >= s.total ? '' : 'info'}" style="width:${s.pct * 100}%"></i></div><small class="muted num">${s.done}/${s.total} un.${s.toPlan && s.open ? ` · ${s.toPlan} por planear` : ''}</small></td><td><span class="pill ${c}">${l}</span></td><td><span class="pill ${pc}">${pl}</span>${mo.due > 0 && mo.paid > 0 ? `<br><small class="muted num">faltam ${eur(mo.due)}</small>` : ''}${o.invoice ? `<br><small class="muted">Fatura ${esc(o.invoice)}</small>` : ''}</td><td class="r num"><b>${eur(o.total)}</b></td></tr>`; }).join('')}
     </tbody></table></div>` : `<div class="empty">${S.orders.length ? 'Nenhuma encomenda neste filtro.' : 'Ainda não há encomendas. Quando um orçamento for aceite, converta-o em encomenda a partir do próprio orçamento.'}</div>`}`;
 }
 
@@ -1958,6 +2042,15 @@ document.addEventListener('click', async e => {
       case 'quote-part': { const p = find('parts'); quoteForm(null, {clientId:p.clientId || '', partIds:[p.id]}); break; }
       case 'rm-row': b.closest('.qitem, .item, .task-row').remove(); onInput && onInput(); break;
       case 'fil-add': filAdd(b.dataset.pre); break;
+      case 'pay-add': case 'pay-quick': {
+        const amt = a === 'pay-quick' ? +b.dataset.v : numv('pa-amount');
+        if (!(amt > 0)){ toast('Indique o valor recebido.'); break; }
+        const o0 = await orderForm.save(), m = orderMoney(o0);
+        const kind = a === 'pay-quick' ? b.dataset.kind : (m.adjDue > 0 ? 'adjudicacao' : 'entrega');
+        const o1 = await addPayment(o0, {amount:amt, kind, date:a === 'pay-quick' ? today() : val('pa-date'), method:a === 'pay-quick' ? 'Transferência' : val('pa-method'), note:a === 'pay-quick' ? '' : val('pa-note').trim()});
+        toast(`Pagamento de ${eur(amt)} registado.`); orderForm(o1); break;
+      }
+      case 'pay-rm': { const o0 = await orderForm.save(); o0.payments = (o0.payments || []).filter(p => p.id !== id); await put('orders', o0); toast('Pagamento apagado.'); orderForm(o0); break; }
       case 'pay-preset': { const el = document.getElementById('q-adj'); if (el){ el.value = b.dataset.v; onInput && onInput(); } break; }
       case 'fil-rm': filRm(b); break;
       case 'quote-pdf': {

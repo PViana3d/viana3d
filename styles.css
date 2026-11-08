@@ -202,6 +202,14 @@ dialog::backdrop{background:rgba(10,16,14,.5)}
 .usel{display:flex;gap:5px;align-items:center;white-space:nowrap}
 .usel + .usel{margin-top:2px}
 .qitem,.plrow{grid-auto-flow:row dense}
+/* pagamentos e lucro */
+.money .ostrip{background:var(--sunk)}
+.num.due{color:var(--bad)}
+.neg-txt{color:var(--bad)}
+.sum.result{position:static;background:var(--sunk)}
+.sum .l.neg{color:var(--bad)}
+tr.tot td{background:var(--sunk);border-top:2px solid var(--line)}
+.pay-add{grid-template-columns:repeat(auto-fit,minmax(130px,1fr))}
 /* pagamento no orçamento */
 .pay-box{display:flex;flex-direction:column;gap:8px}
 .pay-ent{padding:8px 10px;border:1px dashed var(--line);border-radius:6px;font-family:var(--f-mono);font-variant-numeric:tabular-nums;background:var(--sunk)}
