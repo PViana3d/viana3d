@@ -15,6 +15,7 @@ const numv = id => parseFloat(String(val(id)).replace(',', '.')) || 0;
 
 const MAT_COLORS = {PLA:'#4C8BF5', PETG:'#0A9E8F', ABS:'#D9822B', ASA:'#B05FD0', TPU:'#D9466F', Resina:'#7C8A2E', Outro:'#7A8784'};
 const DEF = {company:'Oficina 3D', kwh:0.16, labor:15, margin:40, failure:10, vat:23, low:150, delivery:5, payAdj:50,
+  purgeG:1, packs:[],
   shopOn:true, shopDays:[1,2,3,4,5], shopStart:'09:00', shopEnd:'19:00',
   matPrices:{PLA:20, PETG:22, ABS:22, ASA:28, TPU:30, Resina:35},
   cNif:'', cAddress:'', cPhone:'', cEmail:'', cWeb:'', cIban:'', logo:'', pdfColor:'#0A7470',
@@ -375,6 +376,26 @@ const payText = ps => ps.pAdj >= 100 ? `Pagamento total na adjudicação: ${eur(
 // as condições antigas tinham a percentagem escrita à mão: tira essa frase para não contradizer o orçamento
 const condText = () => String(settings().cond || '').replace(/^[ \t]*Pagamento:[^\n]*adjudica[^\n]*(\n|$)/gim, '').trim();
 
+// purga das trocas de cor (por unidade) e materiais do stock (ímanes, parafusos, embalagem…)
+const purgeOf = it => (+it.changes || 0) * (it.purgeG == null || it.purgeG === '' ? settings().purgeG : +it.purgeG || 0);
+const stockById = id => S.stock.find(x => x.id === id);
+const stockCostOf = uses => (uses || []).reduce((a, u) => a + (+u.qty || 0) * (u.cost != null ? +u.cost || 0 : +((stockById(u.stockId) || {}).avgCost) || 0), 0);
+const stockText = uses => (uses || []).filter(u => stockById(u.stockId)).map(u => { const x = stockById(u.stockId); return `${qtyTxt(u.qty, x.unit)} ${x.name}`; }).join(', ');
+async function applyStock(oldU, newU){
+  const d = {};
+  (oldU || []).forEach(u => { if (u.stockId) d[u.stockId] = (d[u.stockId] || 0) + (+u.qty || 0); });
+  (newU || []).forEach(u => { if (u.stockId) d[u.stockId] = (d[u.stockId] || 0) - (+u.qty || 0); });
+  for (const [id, x] of Object.entries(d)){ const it = stockById(id); if (it && Math.abs(x) > 1e-9){ const c = cp(it); c.qty = r2((+c.qty || 0) + x); await put('stock', c); } }
+}
+// os gastos reais guardam o custo do momento
+const usesWithCost = (list, mult = 1, prev) => (list || []).filter(m => m.stockId && stockById(m.stockId) && +m.qty > 0).map(m => { const o = (prev || []).find(u => u.stockId === m.stockId); return {stockId:m.stockId, qty:r2(m.qty * mult), cost:o ? +o.cost || 0 : +stockById(m.stockId).avgCost || 0}; });
+function stockEditor(px, list){
+  const rows = (list || []).map(u => stockEditor.row(px, u)).join('');
+  return `<div class="items" id="${px}-stock">${rows}</div><div class="srow-add">${S.stock.length ? `<button type="button" class="btn sm" data-act="add-srow" data-px="${px}">Adicionar material</button>` : '<span class="muted">Ainda não há materiais em stock. Registe-os em Compras → Materiais em stock.</span>'}</div>`;
+}
+stockEditor.row = (px, u = {}) => { const r = uid(); const opts = [['', '— Material —']].concat([...S.stock].sort((a, b) => a.name.localeCompare(b.name, 'pt')).map(x => [x.id, `${x.name} (${qtyTxt(x.qty, x.unit)})`]));
+  return `<div class="srow" data-r="${r}">${F(`${px}-ss-${r}`, 'Material', sel(`${px}-ss-${r}`, opts, u.stockId || ''))}${F(`${px}-sq-${r}`, 'Quantidade', inp(`${px}-sq-${r}`, u.qty ?? 1, 'number', 'min="0" step="any"'))}<button type="button" class="btn ghost" data-act="rm-srow" aria-label="Remover material">✕</button></div>`; };
+const readStock = px => [...document.querySelectorAll(`#${px}-stock .srow`)].map(r => ({stockId:val(`${px}-ss-${r.dataset.r}`), qty:r2(numv(`${px}-sq-${r.dataset.r}`))})).filter(u => u.stockId && u.qty > 0);
 function calcQuote(q){
   const s = settings();
   const pr = S.printers.find(p => p.id === q.printerId) || {};
@@ -384,10 +405,12 @@ function calcQuote(q){
   const lines = (q.items || []).map(it => {
     const qty = Math.max(0, +it.qty || 0), fl = filsOf(it), g = sumG(fl), h = +it.hours || 0;
     const material = fl.reduce((a, f) => a + f.grams / 1000 * matEurKg(f.mat), 0), energy = h * watts / 1000 * s.kwh, machine = h * wearH;
-    const failure = (material + energy + machine) * fail, labor = (+it.laborH || 0) * rate;
-    const unitCost = material + energy + machine + failure + labor, unitPrice = unitCost * mk;
+    const pg = purgeOf(it), purge = pg / 1000 * (g ? material / g * 1000 : matEurKg((fl[0] || {}).mat));
+    const stockMat = stockCostOf(it.mats);
+    const failure = (material + purge + energy + machine) * fail, labor = (+it.laborH || 0) * rate;
+    const unitCost = material + purge + stockMat + energy + machine + failure + labor, unitPrice = unitCost * mk;
     const gross = unitPrice * qty, disc = gross * Math.min(100, Math.max(0, +it.disc || 0)) / 100;
-    return {qty, grams:g * qty, hours:h * qty, material:material * qty, energy:energy * qty, machine:machine * qty, failure:failure * qty, labor:labor * qty, cost:unitCost * qty, unitPrice, gross, disc, net:gross - disc};
+    return {qty, grams:g * qty, purgeG:pg * qty, purge:purge * qty, stockMat:stockMat * qty, hours:h * qty, material:material * qty, energy:energy * qty, machine:machine * qty, failure:failure * qty, labor:labor * qty, cost:unitCost * qty, unitPrice, gross, disc, net:gross - disc};
   });
   const sum = k => lines.reduce((a, l) => a + l[k], 0);
   const extraLabor = (+q.laborH || 0) * rate, extraLaborPrice = extraLabor * mk, extras = +q.extras || 0;
@@ -395,7 +418,7 @@ function calcQuote(q){
   const gross = sum('gross') + extraLaborPrice + extras;
   const discount = sum('disc'), net = gross - discount, profit = net - cost;
   const vat = q.vat ? net * s.vat / 100 : 0;
-  return {lines, rate, material:sum('material'), energy:sum('energy'), machine:sum('machine'), failure:sum('failure'), labor:sum('labor') + extraLabor, extraLaborPrice, extras,
+  return {lines, rate, purge:sum('purge'), purgeG:sum('purgeG'), stockMat:sum('stockMat'), material:sum('material'), energy:sum('energy'), machine:sum('machine'), failure:sum('failure'), labor:sum('labor') + extraLabor, extraLaborPrice, extras,
     cost, gross, discount, net, profit, vat, total:r2(net + vat), grams:sum('grams'), hours:sum('hours')};
 }
 const monthOf = d => (d || '').slice(0, 7);
@@ -607,6 +630,9 @@ function vSettings(){
       <div class="field"><label for="s-delivery">Prazo de entrega por defeito (dias úteis)</label><input id="s-delivery" type="number" step="1" min="0" value="${s.delivery}"></div>
       <div class="field"><label for="s-payadj">Pagamento na adjudicação por defeito (%)</label><input id="s-payadj" type="number" step="1" min="0" max="100" value="${s.payAdj}"><span class="hint">O resto paga-se na entrega.</span></div>
     </div>
+    <h2>Multicor e embalagem</h2>
+    <div class="row"><div class="field"><label for="s-purge">Purga por troca de cor (g)</label><input id="s-purge" type="number" step="0.1" min="0" value="${s.purgeG}"><span class="hint">Valor por defeito nas peças novas com várias cores.</span></div></div>
+    <div class="field"><label>Embalagem por defeito em cada encomenda</label>${stockEditor('sp', s.packs || [])}<span class="hint">Copiada para cada encomenda nova; é descontada do stock na entrega.</span></div>
     <h2>Horário da oficina</h2>
     <p class="muted" style="margin:0">O planeamento só marca o início de impressões quando está alguém na oficina. As impressões podem continuar fora de horas.</p>
     <label class="check"><input type="checkbox" id="s-shopon" ${s.shopOn ? 'checked' : ''}> Só começar impressões dentro do horário</label>
@@ -756,7 +782,7 @@ async function convertQuote(q){
   const c = calcQuote(q);
   const o = {id:uid(), number:nextNumber(S.orders, 'ENC'), quoteId:q.id, quoteNumber:q.number, clientId:q.clientId || '', client:clientName(q), date:today(),
     due: addBusinessDays(today(), +q.deliveryDays || 0), closed:'', notes:q.notes || '', total:c.total, net:c.net, plannedCost:r2(c.cost), plannedProfit:r2(c.profit), payAdj:paySplit(q, c.total).pAdj, printerId:q.printerId || '',
-    items:(q.items || []).map(it => withFils({id:it.id, partId:it.partId || '', desc:it.desc, ref:it.ref || '', hours:+it.hours || 0, qty:+it.qty || 1, thumb:it.thumb || ''}, filsOf(it)))};
+    items:(q.items || []).map(it => withFils({id:it.id, partId:it.partId || '', desc:it.desc, ref:it.ref || '', hours:+it.hours || 0, qty:+it.qty || 1, mats:cp(it.mats || []), thumb:it.thumb || ''}, filsOf(it))), packs:cp(settings().packs || [])};
   if (JSON.stringify(o).length > 200000) o.items.forEach(it => { it.thumb = ''; });
   if (q.status !== 'aceite') await put('quotes', {...q, status:'aceite'});
   await put('orders', o);
@@ -846,6 +872,7 @@ function orderForm(o){
       ${stt.items.map(i => `<tr><td style="width:48px">${thumbImg(i.thumb, 36)}</td><td>${esc(i.desc)}${i.ref ? ` <small class="muted mono">${esc(i.ref)}</small>` : ''}<br><small class="muted">${filsOf(i).length > 1 ? filsOf(i).map(f => swatch(matHex(f.mat) || f.hex)).join('') + ' ' : ''}${esc(filsText(i))}</small></td><td class="r num">${i.qty}</td><td class="r num">${i.done}</td><td class="r num">${i.planned}</td><td class="r num">${i.toPlan ? `<b>${i.toPlan}</b>` : '0'}</td><td><div class="bar"><i class="${i.done >= i.qty ? '' : 'info'}" style="width:${Math.min(100, i.done / (i.qty || 1) * 100)}%"></i></div></td></tr>`).join('')}
     </tbody></table></div>
     <div class="cols">${moneyPanel(o)}${resultPanel(o)}</div>
+    <div class="field"><label>Embalagem e materiais da entrega</label>${stockEditor('o', o.packs || [])}<span class="hint">${(o.stockUses || []).length ? `Já descontado do stock na entrega: ${esc(stockText(o.stockUses))}.` : 'São descontados do stock quando a encomenda é marcada como entregue.'}</span></div>
     ${F('o-notes', 'Notas', `<textarea id="o-notes">${esc(o.notes)}</textarea>`)}
     ${jobs.length ? `<h3>Impressões registadas</h3><ul class="alerts">${jobs.map(j => `<li><span class="pill ${j.result === 'sucesso' ? 'ok' : 'bad'}">${j.result === 'sucesso' ? 'OK' : 'Falha'}</span><div class="txt">${esc(j.name)}<small>${fmtDate(j.date)} · ${j.qty || 1} un. · ${hm(j.hours)} · ${num(j.grams)} g</small></div></li>`).join('')}</ul>` : ''}`,
   {wide:true, extra:`<div class="actions"><button type="button" class="btn danger" data-act="del" data-col="orders" data-id="${o.id}">Eliminar</button>${stt.toPlan && stt.open ? `<button type="button" class="btn" data-act="plan-order" data-id="${o.id}">Planear produção</button>` : ''}</div>`,
@@ -855,6 +882,9 @@ function orderForm(o){
     Object.assign(o, {date:val('o-date'), due:val('o-due'), closed, notes:val('o-notes').trim(), invoice:val('o-inv').trim(), invoiceDate:val('o-invdate')});
     if (closed === 'entregue' && !o.deliveredAt) o.deliveredAt = today();
     if (closed !== 'entregue') o.deliveredAt = o.deliveredAt && closed === '' ? '' : o.deliveredAt;
+    o.packs = readStock('o');
+    const su = closed === 'entregue' ? usesWithCost(o.packs, 1, o.stockUses) : [];
+    await applyStock(o.stockUses, su); o.stockUses = su;
     await put('orders', o); return o;
   };
   orderForm.current = () => o;
@@ -1508,6 +1538,7 @@ function printerForm(p){
     <div class="field tf-n" data-tl="hd" ${u === 'hd' ? '' : 'hidden'}><label for="t-id-${t.id}">ou a cada (dias)</label>${inp('t-id-' + t.id, t.intervalDays || 180, 'number', 'min="1" step="1"')}</div>
     <div class="field tf-l" data-tl="h hd" ${u === 'd' ? 'hidden' : ''}><label for="t-lh-${t.id}" title="Horas da máquina quando a tarefa foi feita">Última vez (horas)</label>${inp('t-lh-' + t.id, r2(+t.last || 0), 'number', 'min="0" step="0.1"')}</div>
     <div class="field tf-l" data-tl="d hd" ${u === 'h' ? 'hidden' : ''}><label for="t-ld-${t.id}">Última vez (data)</label>${inp('t-ld-' + t.id, t.lastDate || today(), 'date')}</div>
+    ${S.stock.length ? `<div class="field tf-s"><label for="t-s-${t.id}">Gasta do stock</label>${sel('t-s-' + t.id, [['', 'Nada']].concat([...S.stock].sort((a, b) => a.name.localeCompare(b.name, 'pt')).map(x => [x.id, x.name])), t.stockId || '')}</div><div class="field tf-n"><label for="t-sq-${t.id}">Qtd.</label>${inp('t-sq-' + t.id, t.stockQty ?? 1, 'number', 'min="0" step="any"')}</div>` : ''}
     <button type="button" class="btn ghost" data-act="rm-row" aria-label="Remover tarefa">✕</button></div>`; };
   openDlg(isNew ? 'Nova impressora' : 'Editar impressora', `
     <div class="row">${F('p-name', 'Nome', inp('p-name', p.name, 'text', 'placeholder="ex.: Bambu P1S nº1"'))}${F('p-model', 'Modelo', inp('p-model', p.model))}${F('p-status', 'Estado', sel('p-status', [['ativa', 'Ativa'], ['manutencao', 'Em manutenção'], ['parada', 'Parada']], p.status))}</div>
@@ -1521,13 +1552,14 @@ function printerForm(p){
    handler: async () => {
     if (!val('p-name').trim()){ toast('Indique o nome da impressora.'); return; }
     Object.assign(p, {name:val('p-name').trim(), model:val('p-model').trim(), status:val('p-status'), watts:numv('p-watts'), price:numv('p-price'), life:numv('p-life'), hours:numv('p-hours')});
-    p.tasks = [...document.querySelectorAll('.task-row')].map(r => { const id = r.dataset.id; return {id, name:val('t-n-' + id).trim(), interval:Math.round(numv('t-i-' + id)), intervalDays:Math.round(numv('t-id-' + id)), unit:['d', 'hd'].includes(val('t-u-' + id)) ? val('t-u-' + id) : 'h', last:numv('t-lh-' + id), lastDate:val('t-ld-' + id) || today()}; }).filter(t => t.name && t.interval && (t.unit !== 'hd' || t.intervalDays));
+    p.tasks = [...document.querySelectorAll('.task-row')].map(r => { const id = r.dataset.id; return {id, name:val('t-n-' + id).trim(), interval:Math.round(numv('t-i-' + id)), intervalDays:Math.round(numv('t-id-' + id)), unit:['d', 'hd'].includes(val('t-u-' + id)) ? val('t-u-' + id) : 'h', last:numv('t-lh-' + id), lastDate:val('t-ld-' + id) || today(), stockId:$('#t-s-' + id) ? val('t-s-' + id) : (p.tasks || []).find(x => x.id === id)?.stockId || '', stockQty:$('#t-sq-' + id) ? numv('t-sq-' + id) : 1}; }).filter(t => t.name && t.interval && (t.unit !== 'hd' || t.intervalDays));
     await put('printers', p); closeDlg(); toast(isNew ? 'Impressora adicionada.' : 'Impressora atualizada.');
   }});
   printerForm.taskRow = taskRow;
 }
 
 function maintForm(printerId){
+  maintForm.last = null;
   if (!S.printers.length){ toast('Adicione primeiro uma impressora.'); return; }
   const pid = printerId || S.printers[0].id;
   const taskOpts = id => { const p = S.printers.find(x => x.id === id); return (p ? p.tasks || [] : []).map(t => [t.id, t.name]).concat([['__outra', 'Outra intervenção']]); };
@@ -1535,17 +1567,23 @@ function maintForm(printerId){
   openDlg('Registar manutenção', `
     <div class="row">${F('m-printer', 'Impressora', sel('m-printer', S.printers.map(p => [p.id, p.name]), pid))}${F('m-task', 'Intervenção', sel('m-task', taskOpts(pid), ''))}</div>
     <div class="field" id="m-other-w" hidden><label for="m-other">Descrição</label>${inp('m-other', '', 'text', 'placeholder="ex.: Substituição do ventilador"')}</div>
-    <div class="row">${F('m-date', 'Data', inp('m-date', today(), 'date'))}${F('m-hours', 'Horas da máquina', inp('m-hours', p0.hours || 0, 'number', 'min="0" step="0.1"'))}${F('m-cost', 'Custo de peças (€)', inp('m-cost', 0, 'number', 'min="0" step="0.01"'))}</div>
+    <div class="row">${F('m-date', 'Data', inp('m-date', today(), 'date'))}${F('m-hours', 'Horas da máquina', inp('m-hours', p0.hours || 0, 'number', 'min="0" step="0.1"'))}${F('m-cost', 'Outros custos (€)', inp('m-cost', 0, 'number', 'min="0" step="0.01"'))}</div>
+    <div class="field"><label>Materiais do stock usados</label><div id="m-stk-w">${stockEditor('m', [])}</div><span class="hint" id="m-stk-h"></span></div>
     ${F('m-notes', 'Notas', '<textarea id="m-notes"></textarea>')}
     <label class="check"><input type="checkbox" id="m-reset" checked> Reiniciar o contador desta tarefa</label>`,
-  {input: () => { $('#m-other-w').hidden = val('m-task') !== '__outra'; },
+  {input: () => { $('#m-other-w').hidden = val('m-task') !== '__outra';
+    const key = val('m-printer') + '|' + val('m-task');
+    if (key !== maintForm.last){ maintForm.last = key; const t = ((S.printers.find(x => x.id === val('m-printer')) || {}).tasks || []).find(x => x.id === val('m-task')); $('#m-stk-w').innerHTML = stockEditor('m', t && t.stockId && stockById(t.stockId) ? [{stockId:t.stockId, qty:t.stockQty ?? 1}] : []); }
+    const su = usesWithCost(readStock('m')); $('#m-stk-h').textContent = su.length ? `Descontado do stock ao registar · custo ${eur(stockCostOf(su))} (somado aos outros custos).` : ''; },
    handler: async () => {
     const p = cp(S.printers.find(x => x.id === val('m-printer'))), tid = val('m-task');
     const t = (p.tasks || []).find(x => x.id === tid);
     const name = t ? t.name : val('m-other').trim();
     if (!name){ toast('Descreva a intervenção.'); return; }
     const hoursAt = numv('m-hours');
-    await put('maint', {id:uid(), printerId:p.id, taskId:t ? t.id : '', task:name, date:val('m-date'), hoursAt, cost:numv('m-cost'), notes:val('m-notes').trim()});
+    const su = usesWithCost(readStock('m'));
+    await applyStock(null, su);
+    await put('maint', {id:uid(), printerId:p.id, taskId:t ? t.id : '', task:name, date:val('m-date'), hoursAt, cost:r2(numv('m-cost') + stockCostOf(su)), stockUses:su, notes:val('m-notes').trim()});
     if (t && $('#m-reset').checked){ t.last = hoursAt; t.lastDate = val('m-date') || today(); await put('printers', p); }
     closeDlg(); toast('Manutenção registada.');
   }});
@@ -1572,7 +1610,7 @@ function jobForm(j, prefill){
     <div class="row">${F('j-result', 'Resultado', sel('j-result', [['sucesso', 'Sucesso'], ['falha', 'Falha']], j.result))}<div class="field" id="j-reason-w"><label for="j-reason">Motivo da falha</label>${sel('j-reason', [['', '—'], ['Descolou da base', 'Descolou da base'], ['Entupimento', 'Entupimento'], ['Falta de filamento', 'Falta de filamento'], ['Layer shift', 'Layer shift'], ['Warping', 'Warping'], ['Falha de energia', 'Falha de energia'], ['Outro', 'Outro']], j.reason)}</div></div>
     <div class="row">${F('j-client', 'Cliente', sel('j-client', clientOpts([['', 'Sem cliente']]).concat(j.clientId || !j.client ? [] : [['__legacy', j.client + ' (sem ficha)']]), j.clientId || (j.client ? '__legacy' : '')))}${F('j-quote', 'Orçamento associado', sel('j-quote', [['', 'Nenhum']].concat(S.quotes.map(q => [q.id, `${q.number} · ${clientName(q)}`])), j.quoteId))}</div>
     ${F('j-notes', 'Notas', `<textarea id="j-notes">${esc(j.notes)}</textarea>`)}
-    <p class="muted" style="margin:0">O filamento gasto é descontado de cada bobine e o tempo é somado às horas da impressora.</p>`,
+    <p class="muted" style="margin:0">O filamento gasto é descontado de cada bobine e o tempo é somado às horas da impressora.<span id="j-stk"></span></p>`,
   {input: () => {
     $('#j-reason-w').hidden = val('j-result') !== 'falha';
     const pid = val('j-part'), qty = Math.max(1, numv('j-qty'));
@@ -1587,12 +1625,15 @@ function jobForm(j, prefill){
     }
     lastPart = pid; lastQty = qty;
     filsUpdated('j');
+    const su = jobStock({...j, partId:val('j-part'), qty, result:val('j-result')});
+    $('#j-stk').textContent = su.length ? ` Desconta também do stock: ${stockText(su)}.` : '';
   },
    handler: async () => {
     if (!val('j-name').trim()){ toast('Indique o nome da peça.'); return; }
     const uses = readFils('j').map(f => ({spoolId:f.spoolId || '', grams:r2(f.grams)})).filter(u => u.grams > 0 || u.spoolId);
     Object.assign(j, {name:val('j-name').trim(), date:val('j-date'), printerId:val('j-printer'), uses, spoolId:(uses[0] || {}).spoolId || '', grams:r2(sumG(uses)), hours:r2(numv('j-h') + numv('j-m') / 60),
       result:val('j-result'), reason:val('j-result') === 'falha' ? val('j-reason') : '', clientId:val('j-client').startsWith('__') ? '' : val('j-client'), client:val('j-client') === '__legacy' ? j.client : clientName({clientId:val('j-client')}), partId:val('j-part'), qty:Math.max(1, numv('j-qty')), quoteId:val('j-quote'), notes:val('j-notes').trim()});
+    j.stockUses = jobStock(j, old && old.stockUses);
     await applyJob(old, j); await put('jobs', j);
     if (j.planId){ const pl = S.plan.find(x => x.id === j.planId); if (pl){ const c = cp(pl); c.status = j.result === 'sucesso' ? 'concluida' : 'falhada'; c.jobId = j.id; await put('plan', c); } }
     closeDlg(); toast(isNew ? 'Impressão registada.' : 'Impressão atualizada.');
@@ -1604,7 +1645,15 @@ function jobForm(j, prefill){
     if (r.src || r.file){ const n = $('#j-notes'); const line = `G-code: ${r.file} (${srcLine(r)})`; if (!n.value.includes(line)) n.value = (n.value ? n.value + '\n' : '') + line; }
   };
 }
+// materiais do stock gastos numa impressão bem-sucedida (da peça da encomenda ou do catálogo)
+function jobStock(j, prev){
+  if (j.result !== 'sucesso') return [];
+  const ord = j.orderId && S.orders.find(o => o.id === j.orderId), it = ord && (ord.items || []).find(i => i.id === j.itemId);
+  const src = it && it.mats ? it : S.parts.find(x => x.id === j.partId);
+  return src ? usesWithCost(src.mats, Math.max(1, +j.qty || 1), prev) : [];
+}
 async function applyJob(oldJ, newJ){
+  await applyStock(oldJ && oldJ.stockUses, newJ && newJ.stockUses);
   const g = {}, h = {};
   if (oldJ){ usesOf(oldJ).forEach(u => { if (u.spoolId) g[u.spoolId] = (g[u.spoolId] || 0) + u.grams; }); h[oldJ.printerId] = (h[oldJ.printerId] || 0) - (+oldJ.hours || 0); }
   if (newJ){ usesOf(newJ).forEach(u => { if (u.spoolId) g[u.spoolId] = (g[u.spoolId] || 0) - u.grams; }); h[newJ.printerId] = (h[newJ.printerId] || 0) + (+newJ.hours || 0); }
@@ -1875,16 +1924,19 @@ function partForm(p, opts = {}){
     <div class="row">${F('pt-name', 'Nome da peça', inp('pt-name', p.name, 'text', 'placeholder="ex.: Suporte de parede"'))}${F('pt-ref', 'Referência', inp('pt-ref', p.ref, 'text', 'placeholder="opcional"'))}${F('pt-client', 'Cliente', sel('pt-client', clientOpts([['', 'Geral (todos os clientes)']]), p.clientId))}</div>
     <div class="field"><label>Filamentos por unidade (até ${MAXF})</label>${filEditor('pt', filsOf(p), 'mat')}<span class="hint">Peças multicor ou multimaterial: um filamento por cor/material, com as gramas de cada um.</span></div>
     <div class="row">${hmInputs('pt', p.hours)}${F('pt-labor', 'Mão de obra por unidade (min)', inp('pt-labor', Math.round((p.laborH || 0) * 60), 'number', 'min="0" step="1"'))}</div>
+    <div class="purge-box" id="pt-purge-w"><div class="row">${F('pt-chg', 'Trocas de cor por unidade', inp('pt-chg', p.changes || 0, 'number', 'min="0" step="1"'))}${F('pt-pg', 'Purga por troca (g)', inp('pt-pg', p.purgeG ?? s.purgeG, 'number', 'min="0" step="0.1"'))}<div class="field"><label>Desperdício por unidade</label><div class="pay-ent" id="pt-purge"></div></div></div>
+      <span class="hint">Filamento deitado fora em cada troca de cor (purga e torre). Se os gramas vieram do G-code do slicer, a purga já está incluída: deixe 0 trocas.</span></div>
+    <div class="field"><label>Materiais do stock por unidade</label>${stockEditor('pt', p.mats)}<span class="hint">Ex.: ímanes, parafusos, insertos. Entram no custo do orçamento e são descontados do stock quando regista a impressão.</span></div>
     ${F('pt-notes', 'Notas', `<textarea id="pt-notes" placeholder="ex.: Imprimir deitada, com suportes">${esc(p.notes)}</textarea>`)}
     <p class="muted" style="margin:0">Preço de referência por unidade (margens das Definições, sem IVA): <b class="num" id="pt-price"></b></p>`,
-  {input: () => { filsUpdated('pt'); $('#pt-price').textContent = eur(partPrice(readPart())); },
+  {input: () => { filsUpdated('pt'); const n = readPart(); $('#pt-purge-w').hidden = readFils('pt').filter(f => f.mat).length < 2 && !n.changes; $('#pt-purge').textContent = `${num(purgeOf(n), 1)} g`; $('#pt-price').textContent = eur(partPrice(n)); },
    handler: async () => {
     const n = readPart();
     if (!n.name){ toast('Indique o nome da peça.'); return; }
     await put('parts', n); closeDlg(); toast(isNew ? 'Peça criada.' : 'Peça atualizada.');
     if (opts.after) opts.after(n);
   }});
-  function readPart(){ return withFils({...p, name:val('pt-name').trim(), ref:val('pt-ref').trim(), clientId:val('pt-client'), hours:readHM('pt'), laborH:r2(numv('pt-labor') / 60), notes:val('pt-notes').trim()}, readFils('pt').filter(f => f.mat)); }
+  function readPart(){ return withFils({...p, name:val('pt-name').trim(), ref:val('pt-ref').trim(), clientId:val('pt-client'), hours:readHM('pt'), laborH:r2(numv('pt-labor') / 60), changes:Math.max(0, Math.round(numv('pt-chg'))), purgeG:r2(numv('pt-pg')), mats:readStock('pt'), notes:val('pt-notes').trim()}, readFils('pt').filter(f => f.mat)); }
   onGcode = r => {
     if (!val('pt-name').trim() || $('#pt-name').dataset.fromGcode){ $('#pt-name').value = r.name; $('#pt-name').dataset.fromGcode = '1'; }
     if (r.fils && r.fils.length) setFils('pt', gcodeFils(r, 'mat'));
@@ -1918,11 +1970,11 @@ function quoteForm(q, opts = {}){
   const ensureOpt = code => { if (code && !mo.some(o => o[0] === code)) mo.push([code, matLabel(code)]); };
   (q.items || []).forEach(it => filsOf(it).forEach(f => ensureOpt(f.mat)));
   const gramsSig = x => filsOf(x).map(f => r2(f.grams)).join('|');
-  const isStale = it => { const p = it.partId && S.parts.find(x => x.id === it.partId); return p && (p.name !== it.desc || gramsSig(p) !== gramsSig(it) || +p.hours !== +it.hours || +(p.laborH || 0) !== +(it.laborH || 0)); };
+  const isStale = it => { const p = it.partId && S.parts.find(x => x.id === it.partId); return p && (p.name !== it.desc || gramsSig(p) !== gramsSig(it) || +p.hours !== +it.hours || +(p.laborH || 0) !== +(it.laborH || 0) || +(p.changes || 0) !== +(it.changes || 0) || JSON.stringify(p.mats || []) !== JSON.stringify(it.mats || [])); };
   const optsHtml = (v) => mo.map(([k, l]) => `<option value="${esc(k)}" ${k === v ? 'selected' : ''}>${esc(l)}</option>`).join('');
   const itemFils = it => { const fl = filsOf(it); return `<div class="field qi-mat${fl.length > 1 ? ' multi' : ''}"><label>${fl.length > 1 ? `Filamentos (${fl.length})` : 'Filamento'}</label><div class="qi-fils">${fl.map((f, k) => `<div class="qf">${swatch(matHex(f.mat) || f.hex)}<select id="i-m-${it.id}-${k}" aria-label="Filamento ${k + 1}">${optsHtml(f.mat)}</select>${fl.length > 1 ? `<span class="num muted">${num(f.grams, 1)} g</span>` : ''}</div>`).join('')}</div></div>`; };
   const itemRow = it => `<div class="qitem" data-id="${it.id}">
-    <div class="qi-name">${thumbImg(it.thumb)}<div><b>${esc(it.desc || 'Peça')}</b>${it.ref ? ` <span class="muted mono">${esc(it.ref)}</span>` : ''}<small>${num(it.grams, 1)} g · ${hm(it.hours)}${it.laborH ? ` · ${num(it.laborH * 60)} min mão de obra` : ''} por unidade${it.partId ? '' : ' · sem ficha no catálogo'}</small>${isStale(it) ? `<button type="button" class="linkbtn" data-act="refresh-item">A peça foi alterada no catálogo. Atualizar</button>` : ''}</div></div>
+    <div class="qi-name">${thumbImg(it.thumb)}<div><b>${esc(it.desc || 'Peça')}</b>${it.ref ? ` <span class="muted mono">${esc(it.ref)}</span>` : ''}<small>${num(it.grams, 1)} g · ${hm(it.hours)}${it.laborH ? ` · ${num(it.laborH * 60)} min mão de obra` : ''} por unidade${purgeOf(it) ? ` · purga ${num(purgeOf(it), 1)} g` : ''}${(it.mats || []).length ? ' · ' + esc(stockText(it.mats)) : ''}${it.partId ? '' : ' · sem ficha no catálogo'}</small>${isStale(it) ? `<button type="button" class="linkbtn" data-act="refresh-item">A peça foi alterada no catálogo. Atualizar</button>` : ''}</div></div>
     ${itemFils(it)}
     ${F('i-q-' + it.id, 'Qtd.', inp('i-q-' + it.id, it.qty || 1, 'number', 'min="1" step="1"'))}
     ${F('i-x-' + it.id, 'Desc. %', inp('i-x-' + it.id, it.disc || 0, 'number', 'min="0" max="100" step="0.5"'))}
@@ -1930,13 +1982,13 @@ function quoteForm(q, opts = {}){
     <button type="button" class="btn ghost" data-act="rm-row" aria-label="Remover peça">✕</button></div>`;
   // filamentos da peça; os genéricos passam para a bobine mais parecida (material e cor) com stock
   const partFils = (p, qty) => filsOf(p).map(f => { if (f.mat && f.mat.startsWith('m:')){ const sp = bestSpool(f.mat.slice(2), f.hex, f.grams * qty); if (sp) return {mat:'s:' + sp.id, grams:f.grams, hex:f.hex}; } return {mat:f.mat, grams:f.grams, hex:f.hex}; });
-  const itemFromPart = (p, qty = 1) => withFils({id:uid(), partId:p.id, desc:p.name, ref:p.ref || '', hours:+p.hours || 0, laborH:+p.laborH || 0, thumb:p.thumb || '', qty, disc:0}, partFils(p, qty));
+  const itemFromPart = (p, qty = 1) => withFils({id:uid(), partId:p.id, desc:p.name, ref:p.ref || '', hours:+p.hours || 0, laborH:+p.laborH || 0, changes:+p.changes || 0, purgeG:p.purgeG ?? null, mats:cp(p.mats || []), thumb:p.thumb || '', qty, disc:0}, partFils(p, qty));
   const addItem = it => { filsOf(it).forEach(f => ensureOpt(f.mat)); snap[it.id] = it; const w = document.createElement('div'); w.innerHTML = itemRow(it); $('#q-items').append(w.firstElementChild); $('#q-empty').hidden = true; };
   quoteForm.addPart = (pid, qty) => { const p = S.parts.find(x => x.id === pid); if (p){ addItem(itemFromPart(p, qty)); onInput && onInput(); } };
   quoteForm.refreshItem = id => {
     const old = snap[id], p = old && S.parts.find(x => x.id === old.partId); if (!p) return;
     const qty = numv('i-q-' + id) || 1;
-    const n = withFils({...old, desc:p.name, ref:p.ref || '', hours:+p.hours || 0, laborH:+p.laborH || 0, thumb:p.thumb || '', qty, disc:numv('i-x-' + id)}, partFils(p, qty));
+    const n = withFils({...old, desc:p.name, ref:p.ref || '', hours:+p.hours || 0, laborH:+p.laborH || 0, changes:+p.changes || 0, purgeG:p.purgeG ?? null, mats:cp(p.mats || []), thumb:p.thumb || '', qty, disc:numv('i-x-' + id)}, partFils(p, qty));
     filsOf(n).forEach(f => ensureOpt(f.mat)); snap[id] = n; const row = document.querySelector(`.qitem[data-id="${id}"]`); const w = document.createElement('div'); w.innerHTML = itemRow(n); row.replaceWith(w.firstElementChild); onInput && onInput();
   };
   const partOpts = cid => {
@@ -1980,7 +2032,7 @@ function quoteForm(q, opts = {}){
     const n = read(), c = calcQuote(n), L = (l, v, cls = '') => `<div class="l ${cls}"><span>${l}</span><span>${v}</span></div>`;
     [...document.querySelectorAll('#q-items .qitem')].forEach((r, i) => { const l = c.lines[i]; if (!l) return; r.querySelector('.u').textContent = `${eur(l.unitPrice)} /un.`; r.querySelector('.t').textContent = eur(l.net); r.querySelector('.t').title = l.disc ? `Antes do desconto: ${eur(l.gross)}` : ''; });
     $('#q-empty').hidden = n.items.length > 0;
-    $('#q-sum').innerHTML = `<div class="eyebrow">Cálculo</div>${L('Filamento', eur(c.material))}${L(`${num(c.grams)} g · ${hm(c.hours)} de máquina`, '', 'sub')}${L('Energia', eur(c.energy))}${L('Desgaste da máquina', eur(c.machine))}${L(`Mão de obra (${eur(c.rate)}/h)`, eur(c.labor))}${L('Margem p/ falhas', eur(c.failure))}${L('Extras', eur(c.extras))}<hr>${L('Custo total', eur(c.cost))}${L('Preço antes de descontos', eur(c.gross))}${c.discount ? L('Descontos', '−' + eur(c.discount), 'disc') : ''}${L('Valor sem IVA', eur(c.net))}${L('Lucro', eur(c.profit), c.profit < 0 ? 'neg' : 'sub')}${L(`IVA (${num(s.vat)}%)`, eur(c.vat))}<hr>${L('Total', eur(c.total), 'total')}${(() => { const ps = paySplit(n, c.total); return `<hr>${ps.pAdj > 0 ? L(`Na adjudicação (${pctTxt(ps.pAdj)})`, eur(ps.adj)) : ''}${ps.pEnt > 0 ? L(`Na entrega (${pctTxt(ps.pEnt)})`, eur(ps.ent)) : ''}`; })()}`;
+    $('#q-sum').innerHTML = `<div class="eyebrow">Cálculo</div>${L('Filamento', eur(c.material))}${c.purge ? L(`Purga de cor (${num(c.purgeG)} g)`, eur(c.purge)) : ''}${c.stockMat ? L('Materiais do stock', eur(c.stockMat)) : ''}${L(`${num(c.grams)} g · ${hm(c.hours)} de máquina`, '', 'sub')}${L('Energia', eur(c.energy))}${L('Desgaste da máquina', eur(c.machine))}${L(`Mão de obra (${eur(c.rate)}/h)`, eur(c.labor))}${L('Margem p/ falhas', eur(c.failure))}${L('Extras', eur(c.extras))}<hr>${L('Custo total', eur(c.cost))}${L('Preço antes de descontos', eur(c.gross))}${c.discount ? L('Descontos', '−' + eur(c.discount), 'disc') : ''}${L('Valor sem IVA', eur(c.net))}${L('Lucro', eur(c.profit), c.profit < 0 ? 'neg' : 'sub')}${L(`IVA (${num(s.vat)}%)`, eur(c.vat))}<hr>${L('Total', eur(c.total), 'total')}${(() => { const ps = paySplit(n, c.total); return `<hr>${ps.pAdj > 0 ? L(`Na adjudicação (${pctTxt(ps.pAdj)})`, eur(ps.adj)) : ''}${ps.pEnt > 0 ? L(`Na entrega (${pctTxt(ps.pEnt)})`, eur(ps.ent)) : ''}`; })()}`;
     { const ps = paySplit(n, c.total); $('#q-ent').textContent = `${pctTxt(ps.pEnt)} · ${eur(ps.ent)}`; document.querySelectorAll('[data-act="pay-preset"]').forEach(b => b.setAttribute('aria-pressed', String(+b.dataset.v === ps.pAdj))); }
    },
    handler: async () => {
@@ -2113,6 +2165,8 @@ document.addEventListener('click', async e => {
       case 'import-parts': importPartsDlg(); break;
       case 'quote-part': { const p = find('parts'); quoteForm(null, {clientId:p.clientId || '', partIds:[p.id]}); break; }
       case 'rm-row': b.closest('.qitem, .item, .task-row').remove(); onInput && onInput(); break;
+      case 'rm-srow': b.closest('.srow').remove(); onInput && onInput(); break;
+      case 'add-srow': { const w = document.createElement('div'); w.innerHTML = stockEditor.row(b.dataset.px); $('#' + b.dataset.px + '-stock').append(w.firstElementChild); onInput && onInput(); break; }
       case 'fil-add': filAdd(b.dataset.pre); break;
       case 'pay-add': case 'pay-quick': {
         const amt = a === 'pay-quick' ? +b.dataset.v : numv('pa-amount');
@@ -2154,6 +2208,7 @@ document.addEventListener('click', async e => {
         confirmDlg('Eliminar', `Quer eliminar ${labels[col]}?${extra} Esta ação não pode ser desfeita.`, 'Eliminar', async () => {
           if (col === 'jobs' && item){ await applyJob(item, null); const pl = item.planId && S.plan.find(x => x.id === item.planId); if (pl){ const c = cp(pl); c.status = 'planeada'; delete c.jobId; await put('plan', c); } }
           if (col === 'orders') for (const x of S.plan.filter(x => x.orderId === id && activePlan(x))) await del('plan', x.id);
+          if ((col === 'orders' || col === 'maint') && item && (item.stockUses || []).length) await applyStock(item.stockUses, null);
           await del(col, id); toast('Eliminado.');
         });
         break;
@@ -2168,7 +2223,7 @@ document.addEventListener('submit', async e => {
   if (e.target.id === 'settings-form'){
     const s = settings(), mp = {};
     document.querySelectorAll('[data-mat]').forEach(i => mp[i.dataset.mat] = parseFloat(i.value) || 0);
-    try{ await putSettings({...s, company:val('s-company').trim() || 'Oficina 3D', kwh:numv('s-kwh'), labor:numv('s-labor'), margin:numv('s-margin'), failure:numv('s-failure'), vat:numv('s-vat'), low:numv('s-low'), delivery:numv('s-delivery'), payAdj:Math.min(100, Math.max(0, numv('s-payadj'))), shopOn:$('#s-shopon').checked, shopDays:[0,1,2,3,4,5,6].filter(d => $('#s-day-' + d).checked), shopStart:val('s-shopa') || '09:00', shopEnd:val('s-shopb') || '19:00', matPrices:mp, cNif:val('s-nif').trim(), cPhone:val('s-phone').trim(), cEmail:val('s-email').trim(), cWeb:val('s-web').trim(), cAddress:val('s-address').trim(), cIban:val('s-iban').trim(), pdfColor:val('s-color') || '#0A7470', cond:val('s-cond').trim(), logo:st.logo !== undefined ? st.logo : (s.logo || '')}); st.logo = undefined; toast('Definições guardadas.'); }catch(err){}
+    try{ await putSettings({...s, company:val('s-company').trim() || 'Oficina 3D', kwh:numv('s-kwh'), labor:numv('s-labor'), margin:numv('s-margin'), failure:numv('s-failure'), vat:numv('s-vat'), low:numv('s-low'), delivery:numv('s-delivery'), payAdj:Math.min(100, Math.max(0, numv('s-payadj'))), purgeG:numv('s-purge'), packs:readStock('sp'), shopOn:$('#s-shopon').checked, shopDays:[0,1,2,3,4,5,6].filter(d => $('#s-day-' + d).checked), shopStart:val('s-shopa') || '09:00', shopEnd:val('s-shopb') || '19:00', matPrices:mp, cNif:val('s-nif').trim(), cPhone:val('s-phone').trim(), cEmail:val('s-email').trim(), cWeb:val('s-web').trim(), cAddress:val('s-address').trim(), cIban:val('s-iban').trim(), pdfColor:val('s-color') || '#0A7470', cond:val('s-cond').trim(), logo:st.logo !== undefined ? st.logo : (s.logo || '')}); st.logo = undefined; toast('Definições guardadas.'); }catch(err){}
   }
 });
 document.addEventListener('input', e => {

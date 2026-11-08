@@ -357,3 +357,11 @@ label.check{display:flex;align-items:center;gap:8px;font-size:.9rem}
 .buy{background:var(--warn-soft);border:1px solid var(--warn);border-radius:8px;padding:10px 14px}
 .buy ul{margin:6px 0 0;padding-left:18px}
 .buy li{margin:3px 0}
+
+/* materiais do stock e purga */
+.srow{display:grid;grid-template-columns:minmax(0,1fr) 110px 36px;gap:8px;align-items:end}
+.srow-add{margin-top:6px}
+.purge-box{display:flex;flex-direction:column;gap:4px}
+.task-row .tf-s{flex:1 1 150px;min-width:130px}
+.purge-box > .hint{font-size:.78rem;color:var(--muted)}
+.task-row .tf-s{flex:0 1 180px}
