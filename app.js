@@ -878,7 +878,7 @@ function orderForm(o){
     <div class="field"><label>Embalagem e materiais da entrega</label>${stockEditor('o', o.packs || [])}<span class="hint">${(o.stockUses || []).length ? `Já descontado do stock na entrega: ${esc(stockText(o.stockUses))}.` : 'São descontados do stock quando a encomenda é marcada como entregue.'}</span></div>
     ${F('o-notes', 'Notas', `<textarea id="o-notes">${esc(o.notes)}</textarea>`)}
     ${jobs.length ? `<h3>Impressões registadas</h3><ul class="alerts">${jobs.map(j => `<li><span class="pill ${j.result === 'sucesso' ? 'ok' : 'bad'}">${j.result === 'sucesso' ? 'OK' : 'Falha'}</span><div class="txt">${esc(j.name)}<small>${fmtDate(j.date)} · ${j.qty || 1} un. · ${hm(j.hours)} · ${num(j.grams)} g</small></div></li>`).join('')}</ul>` : ''}`,
-  {wide:true, extra:`<div class="actions"><button type="button" class="btn danger" data-act="del" data-col="orders" data-id="${o.id}">Eliminar</button>${stt.toPlan && stt.open ? `<button type="button" class="btn" data-act="plan-order" data-id="${o.id}">Planear produção</button>` : ''}</div>`,
+  {wide:true, extra:`<div class="actions"><button type="button" class="btn danger" data-act="del" data-col="orders" data-id="${o.id}">Eliminar</button><button type="button" class="btn" data-act="order-pdf" data-kind="encomenda">PDF da encomenda</button><button type="button" class="btn" data-act="order-pdf" data-kind="entrega">Comprovativo de entrega</button>${stt.toPlan && stt.open ? `<button type="button" class="btn" data-act="plan-order" data-id="${o.id}">Planear produção</button>` : ''}</div>`,
    handler: async () => { await orderForm.save(); closeDlg(); toast('Encomenda guardada.'); }});
   orderForm.save = async () => {
     const closed = val('o-closed');
@@ -1266,6 +1266,129 @@ function quotePdf(jsPDF, q){
   }
   doc.setProperties({title:pdfT(`Orçamento ${q.number}`), subject:pdfT(cname), creator:pdfT(s.company)});
   return doc;
+}
+/* ---------- PDF da encomenda e comprovativo de entrega ---------- */
+function pdfKit(jsPDF){
+  const s = settings(), doc = new jsPDF({unit:'mm', format:'a4', compress:true});
+  const k = {s, doc, W:210, H:297, M:16, acc:hexRgb(s.pdfColor), ink:[28, 34, 32], grey:[104, 114, 110], light:[226, 231, 229], y:16};
+  k.CW = k.W - 2 * k.M; k.BOTTOM = k.H - 24;
+  k.T = (txt, x, y, o) => doc.text(pdfT(txt), x, y, o);
+  k.font = (size, style = 'normal', col = k.ink) => { doc.setFont('helvetica', style); doc.setFontSize(size); doc.setTextColor(...col); };
+  k.wrap = (txt, w) => doc.splitTextToSize(pdfT(txt), w);
+  k.page = need => { if (k.y + need > k.BOTTOM){ doc.addPage(); k.y = k.M; return true; } return false; };
+  k.head = () => {
+    const {M, W} = k; let y = k.y, logoH = 0;
+    if (s.logo){ try{ const p = doc.getImageProperties(s.logo); const r = p.width / p.height; let h = 20, w = h * r; if (w > 60){ w = 60; h = w / r; } doc.addImage(s.logo, p.fileType || 'PNG', M, y, w, h); logoH = h; }catch(e){} }
+    k.font(13, 'bold'); k.T(s.company, W - M, y + 5, {align:'right'});
+    const comp = [...String(s.cAddress || '').split('\n'), [s.cNif ? 'NIF ' + s.cNif : '', s.cPhone].filter(Boolean).join('  ·  '), [s.cEmail, s.cWeb].filter(Boolean).join('  ·  ')].map(x => x.trim()).filter(Boolean);
+    k.font(8.5, 'normal', k.grey); comp.forEach((l, i) => k.T(l, W - M, y + 10.5 + i * 4, {align:'right'}));
+    y = Math.max(y + logoH, y + 10.5 + comp.length * 4) + 4;
+    doc.setDrawColor(...k.acc); doc.setLineWidth(0.9); doc.line(M, y, W - M, y); k.y = y + 12;
+  };
+  k.title = (title, number, meta) => {
+    const {M, W} = k, y = k.y;
+    k.font(title.length > 14 ? 18 : 22, 'bold', k.acc); k.T(title, M, y); k.font(11, 'bold'); k.T(number, M, y + 7);
+    meta.forEach(([a, b], i) => { k.font(8, 'normal', k.grey); k.T(a, 118, y - 6 + i * 6.5); k.font(9.5, 'bold'); k.T(b, W - M, y - 6 + i * 6.5, {align:'right'}); });
+    k.y = y + Math.max(16, meta.length * 6.5 + 4);
+  };
+  k.client = o => {
+    const cl = S.clients.find(x => x.id === o.clientId), cname = clientName(o); if (!cname) return;
+    const {M, CW} = k, y = k.y;
+    const lines = [cl && cl.nif ? 'NIF ' + cl.nif : '', ...String(cl && cl.address || '').split('\n'), [cl && cl.email, cl && cl.phone].filter(Boolean).join('  ·  ')].map(x => (x || '').trim()).filter(Boolean);
+    const bh = 15.5 + lines.length * 4.3;
+    doc.setFillColor(...k.acc.map(v => Math.round(v * 0.08 + 255 * 0.92))); doc.roundedRect(M, y, CW, bh, 2, 2, 'F');
+    k.font(7.5, 'bold', k.acc); k.T('CLIENTE', M + 5, y + 6); k.font(11, 'bold'); k.T(cname, M + 5, y + 11.5);
+    k.font(8.5, 'normal', k.grey); lines.forEach((l, i) => k.T(l, M + 5, y + 16.5 + i * 4.3)); k.y = y + bh + 8;
+  };
+  // tabela simples: cols = [{label, w (0 = resto), a}], rows = [[{t, sub, bold}|texto]]
+  k.table = (cols, rows) => {
+    const {M, CW, W} = k; const fixed = cols.reduce((a, c) => a + (c.w || 0), 0); let cx = M;
+    cols.forEach(c => { if (!c.w) c.w = CW - fixed; c.x = cx; cx += c.w; });
+    const hdr = () => { doc.setFillColor(...k.acc); doc.rect(M, k.y, CW, 8, 'F'); k.font(8, 'bold', [255, 255, 255]); cols.forEach(c => k.T(c.label, c.a === 'right' ? c.x + c.w - 2.5 : c.x + 2.5, k.y + 5.3, c.a === 'right' ? {align:'right'} : undefined)); k.y += 8; };
+    hdr();
+    rows.forEach((r, i) => {
+      const cells = r.map((v, j) => { const o = typeof v === 'object' && v ? v : {t:String(v ?? '')}; k.font(9.5, o.bold || j === 0 ? 'bold' : 'normal'); const tl = k.wrap(o.t, cols[j].w - 5); k.font(8); const sl = o.sub ? k.wrap(o.sub, cols[j].w - 5) : []; return {o, tl, sl, h:tl.length * 4.4 + sl.length * 3.8}; });
+      const rh = Math.max(10, ...cells.map(c => c.h + 6));
+      if (k.y + rh > k.BOTTOM){ doc.addPage(); k.y = k.M; hdr(); }
+      if (i % 2 === 1){ doc.setFillColor(248, 249, 249); doc.rect(M, k.y, CW, rh, 'F'); }
+      cells.forEach((c, j) => { const col = cols[j]; let ty = k.y + (rh - c.h) / 2 + 3.3; const x = col.a === 'right' ? col.x + col.w - 2.5 : col.x + 2.5, al = col.a === 'right' ? {align:'right'} : undefined;
+        k.font(j === 0 ? 9.5 : 9, c.o.bold || j === 0 ? 'bold' : 'normal'); c.tl.forEach(t => { doc.text(t, x, ty, al); ty += 4.4; });
+        k.font(8, 'normal', k.grey); c.sl.forEach(t => { doc.text(t, x, ty - .4, al); ty += 3.8; }); });
+      k.y += rh; doc.setDrawColor(...k.light); doc.setLineWidth(0.2); doc.line(M, k.y, W - M, k.y);
+    });
+    k.y += 7;
+  };
+  k.section = (label, lines, size = 9) => { k.font(size); const wl = lines.flatMap(l => k.wrap(l, k.CW)); k.page(wl.length * 4.3 + 9); k.font(7.5, 'bold', k.acc); k.T(label, k.M, k.y); k.font(size, 'normal', k.ink); wl.forEach((t, i) => doc.text(t, k.M, k.y + 5.5 + i * 4.3)); k.y += 5.5 + wl.length * 4.3 + 5; };
+  k.foot = (ref, title) => {
+    const {W, H, M} = k, n = doc.getNumberOfPages();
+    for (let i = 1; i <= n; i++){ doc.setPage(i); doc.setDrawColor(...k.light); doc.setLineWidth(0.3); doc.line(M, H - 14, W - M, H - 14);
+      k.font(7.5, 'normal', k.grey); k.T([s.company, s.cNif ? 'NIF ' + s.cNif : '', s.cEmail].filter(Boolean).join('  ·  '), M, H - 9.5); k.T(`${ref}  ·  Página ${i} de ${n}`, W - M, H - 9.5, {align:'right'}); }
+    doc.setProperties({title:pdfT(title), creator:pdfT(s.company)});
+  };
+  return k;
+}
+function orderPdf(jsPDF, o){
+  const k = pdfKit(jsPDF), q = S.quotes.find(x => x.id === o.quoteId), c = q ? calcQuote(q) : null, m = orderMoney(o);
+  k.head();
+  k.title('Encomenda', o.number, [['Data', longDate(o.date)], ['Prazo de entrega', longDate(o.due)], ['Orçamento', o.quoteNumber || '—']].concat(o.invoice ? [['Fatura', o.invoice]] : []));
+  k.client(o);
+  const rows = (o.items || []).map(it => { const i = q ? (q.items || []).findIndex(x => x.id === it.id) : -1, l = i >= 0 ? c.lines[i] : null;
+    const ms = [...new Set(filsOf(it).map(f => clientMat(f.mat)).filter(Boolean))];
+    return [{t:it.desc || 'Peça', sub:[it.ref ? 'Ref. ' + it.ref : '', ms.length ? (ms.length > 1 ? 'Materiais: ' : 'Material: ') + ms.join(', ') : ''].filter(Boolean).join('  ·  ')}, String(it.qty), l ? eur(l.net / Math.max(1, l.qty)) : '—', l ? {t:eur(l.net), bold:true} : '—']; });
+  if (c && c.extraLaborPrice > .004) rows.push([{t:'Mão de obra adicional'}, '', '', {t:eur(c.extraLaborPrice), bold:true}]);
+  if (c && c.extras > .004) rows.push([{t:'Outros custos'}, '', '', {t:eur(c.extras), bold:true}]);
+  k.table([{label:'Descrição'}, {label:'Qtd.', w:16, a:'right'}, {label:'Preço unit.', w:28, a:'right'}, {label:'Total', w:30, a:'right'}], rows);
+  // totais
+  const {doc, W, M} = k, tx = W - M - 78, net = +o.net || (c ? c.net : 0), vat = r2(m.total - net);
+  const tot = [['Total sem IVA', eur(net)], vat > .004 ? [`IVA`, eur(vat)] : ['IVA', 'Não incluído']];
+  k.page(tot.length * 6 + 16);
+  tot.forEach(([a, b], i) => { k.font(9, 'normal', k.grey); k.T(a, tx, k.y + 4 + i * 6); k.font(9.5); k.T(b, W - M, k.y + 4 + i * 6, {align:'right'}); });
+  const by = k.y + tot.length * 6 + 1.5;
+  doc.setFillColor(...k.acc); doc.roundedRect(tx - 3, by, 81, 11, 1.5, 1.5, 'F');
+  k.font(10, 'bold', [255, 255, 255]); k.T('Total', tx, by + 7.2); k.font(13, 'bold', [255, 255, 255]); k.T(eur(m.total), W - M - 2, by + 7.4, {align:'right'});
+  k.y = by + 19;
+  // pagamentos
+  k.font(7.5, 'bold', k.acc); k.page(20); k.T('PAGAMENTOS', M, k.y); k.y += 4;
+  const pays = [...(o.payments || [])].sort((a, b) => (a.date || '').localeCompare(b.date || ''));
+  if (pays.length) k.table([{label:'Data'}, {label:'Referente a', w:44}, {label:'Forma', w:36}, {label:'Valor', w:30, a:'right'}], pays.map(p => [{t:fmtDate(p.date), sub:p.note || ''}, p.kind === 'adjudicacao' ? 'Adjudicação' : p.kind === 'entrega' ? 'Entrega' : 'Pagamento', p.method || '', {t:eur(p.amount), bold:true}]));
+  else { k.font(9, 'normal', k.grey); k.T('Ainda não foram registados pagamentos.', M, k.y + 4); k.y += 10; }
+  k.page(20);
+  [['Combinado', m.ps.pAdj >= 100 ? 'Tudo na adjudicação' : m.ps.pAdj <= 0 ? 'Tudo na entrega' : `${pctTxt(m.ps.pAdj)} na adjudicação (${eur(m.ps.adj)}) · ${pctTxt(m.ps.pEnt)} na entrega (${eur(m.ps.ent)})`], ['Recebido', eur(m.paid)], ['Em dívida', eur(m.due)]].forEach(([a, b], i) => { k.font(9, 'normal', k.grey); k.T(a, M, k.y + i * 6); k.font(9.5, i === 2 ? 'bold' : 'normal', i === 2 && m.due > .004 ? [176, 42, 42] : k.ink); k.T(b, W - M, k.y + i * 6, {align:'right'}); });
+  k.y += 22;
+  const cond = [k.s.cIban && m.due > .004 ? `Pagamento por transferência bancária para o IBAN ${k.s.cIban}.` : '', o.notes || ''].filter(Boolean);
+  if (cond.length) k.section('NOTAS', cond);
+  k.section('NOTA', ['Este documento confirma a encomenda e os pagamentos recebidos. Não é uma fatura.'], 8);
+  k.foot(o.number, `Encomenda ${o.number}`);
+  return k.doc;
+}
+function deliveryPdf(jsPDF, o){
+  const k = pdfKit(jsPDF), d = o.deliveredAt || today();
+  k.head();
+  k.title('Comprovativo de entrega', o.number, [['Data de entrega', longDate(d)], ['Encomenda', o.number], ['Data da encomenda', longDate(o.date)]].concat(o.invoice ? [['Fatura', o.invoice]] : []));
+  k.client(o);
+  k.table([{label:'Descrição'}, {label:'Referência', w:36}, {label:'Quantidade', w:28, a:'right'}],
+    (o.items || []).map(it => [{t:it.desc || 'Peça', sub:[...new Set(filsOf(it).map(f => clientMat(f.mat)).filter(Boolean))].join(', ')}, it.ref || '—', {t:String(it.qty), bold:true}]));
+  const n = (o.items || []).reduce((a, it) => a + (+it.qty || 0), 0);
+  k.font(9.5, 'bold'); k.T(`Total: ${n} ${n === 1 ? 'unidade' : 'unidades'}`, k.W - k.M, k.y - 2, {align:'right'}); k.y += 6;
+  if (o.notes) k.section('NOTAS', [o.notes]);
+  const {doc, M, W} = k; k.page(46);
+  k.font(9.5); k.T('Declaro que recebi as peças acima indicadas, em bom estado e nas quantidades referidas.', M, k.y); k.y += 18;
+  doc.setDrawColor(...k.grey); doc.setLineWidth(0.2);
+  [[M, 'Assinatura do cliente'], [M + 98, 'Nome legível']].forEach(([x, l]) => { doc.line(x, k.y, x + 80, k.y); k.font(7.5, 'normal', k.grey); k.T(l, x, k.y + 4); });
+  k.y += 18;
+  [[M, 'Entregue por'], [M + 98, 'Data']].forEach(([x, l]) => { doc.line(x, k.y, x + 80, k.y); k.font(7.5, 'normal', k.grey); k.T(l, x, k.y + 4); });
+  k.y += 14;
+  k.section('NOTA', ['Documento interno de controlo de entrega. Não é fatura nem documento de transporte.'], 8);
+  k.foot(o.number, `Comprovativo de entrega ${o.number}`);
+  return k.doc;
+}
+async function exportOrderPdf(o, kind){
+  toast('A gerar o PDF…');
+  let jsPDF; try{ jsPDF = await ensureJsPDF(); }catch(e){ toast('Não foi possível carregar o gerador de PDF. Verifique a ligação e tente de novo.'); return; }
+  let doc; try{ doc = kind === 'entrega' ? deliveryPdf(jsPDF, o) : orderPdf(jsPDF, o); }catch(e){ console.error(e); toast('Ocorreu um erro ao montar o PDF.'); return; }
+  const name = `${kind === 'entrega' ? 'Comprovativo de entrega' : 'Encomenda'} ${o.number}${clientName(o) ? ' - ' + clientName(o) : ''}.pdf`.replace(/[\\/:*?"<>|]/g, '-');
+  const blob = doc.output('blob'), file = new File([blob], name, {type:'application/pdf'});
+  openPdfReady(name, blob, file, canShareFile(file));
 }
 async function exportQuotePdf(q){
   if (!(q.items || []).length){ toast('Adicione peças ao orçamento antes de gerar o PDF.'); return; }
@@ -2246,6 +2369,7 @@ document.addEventListener('click', async e => {
         await exportQuotePdf(n); break;
       }
       case 'quote-pdf-id': await exportQuotePdf(find('quotes')); break;
+      case 'order-pdf': { const o0 = await orderForm.save(); await exportOrderPdf(o0, b.dataset.kind); break; }
       case 'logo-rm': { st.logo = ''; const keep = {}; document.querySelectorAll('#settings-form input, #settings-form textarea').forEach(i => { if (i.id && i.type !== 'file') keep[i.id] = i.type === 'checkbox' ? i.checked : i.value; }); render(); Object.entries(keep).forEach(([k, v]) => { const el = document.getElementById(k); if (el){ if (typeof v === 'boolean') el.checked = v; else el.value = v; } }); break; }
       case 'copy-quote': {
         const txt = quoteText(quoteForm.read());
