@@ -15,6 +15,7 @@ const numv = id => parseFloat(String(val(id)).replace(',', '.')) || 0;
 
 const MAT_COLORS = {PLA:'#4C8BF5', PETG:'#0A9E8F', ABS:'#D9822B', ASA:'#B05FD0', TPU:'#D9466F', Resina:'#7C8A2E', Outro:'#7A8784'};
 const DEF = {company:'Oficina 3D', kwh:0.16, labor:15, margin:40, failure:10, vat:23, low:150, delivery:5, payAdj:50,
+  shopOn:true, shopDays:[1,2,3,4,5], shopStart:'09:00', shopEnd:'19:00',
   matPrices:{PLA:20, PETG:22, ABS:22, ASA:28, TPU:30, Resina:35},
   cNif:'', cAddress:'', cPhone:'', cEmail:'', cWeb:'', cIban:'', logo:'', pdfColor:'#0A7470',
   cond:'Preços em euros. Portes de envio não incluídos, salvo indicação em contrário.'};
@@ -519,13 +520,13 @@ function vSpools(){
 }
 function spoolCard(s){
   const pct = s.weight ? Math.min(1, spoolRemain(s) / s.weight) : 0, C = 2 * Math.PI * 30;
-  const [t, c] = spoolStatus(s);
+  const [t, c] = spoolStatus(s), rsv = reservations().sp[s.id] || 0;
   return `<article class="spool ${c === 'bad' ? 'out' : ''}">
     <div class="spool-top">
       <div class="ring"><svg viewBox="0 0 72 72"><circle cx="36" cy="36" r="30" fill="none" stroke="var(--sunk)" stroke-width="9"/><circle cx="36" cy="36" r="30" fill="none" stroke="${esc(s.hex || '#888')}" stroke-width="9" stroke-dasharray="${C * pct} ${C}"/><circle cx="36" cy="36" r="25.5" fill="none" stroke="var(--line)" stroke-width="1"/><circle cx="36" cy="36" r="34.5" fill="none" stroke="var(--line)" stroke-width="1"/></svg><span>${num(pct * 100)}%</span></div>
       <div class="spool-id"><b>${esc(spoolLabel(s))}</b><small>${esc(s.brand || 'Sem marca')}${s.diameter ? ' · ' + esc(s.diameter) + ' mm' : ''}</small><span class="pill ${c}">${t}</span></div>
     </div>
-    <dl class="meta"><dt>Restante</dt><dd>${num(spoolRemain(s))} / ${num(s.weight)} g</dd><dt>Preço</dt><dd>${eur(s.price)} · ${eur(spoolEurKg(s))}/kg</dd><dt>Comprada</dt><dd>${fmtDate(s.bought)}</dd>${s.purchaseNumber ? `<dt>Compra</dt><dd>${esc(s.purchaseNumber)}${s.supplier ? ' · ' + esc(s.supplier) : ''}</dd>` : ''}${s.location ? `<dt>Local</dt><dd>${esc(s.location)}</dd>` : ''}</dl>
+    <dl class="meta"><dt>Restante</dt><dd>${num(spoolRemain(s))} / ${num(s.weight)} g</dd>${rsv ? `<dt>Reservado</dt><dd class="${rsv > spoolRemain(s) + .5 ? 'neg-txt' : ''}">${num(rsv)} g na fila${rsv > spoolRemain(s) + .5 ? ' · não chega' : ''}</dd>` : ''}<dt>Preço</dt><dd>${eur(s.price)} · ${eur(spoolEurKg(s))}/kg</dd><dt>Comprada</dt><dd>${fmtDate(s.bought)}</dd>${s.purchaseNumber ? `<dt>Compra</dt><dd>${esc(s.purchaseNumber)}${s.supplier ? ' · ' + esc(s.supplier) : ''}</dd>` : ''}${s.location ? `<dt>Local</dt><dd>${esc(s.location)}</dd>` : ''}</dl>
     <div class="card-foot"><button class="btn ghost sm" data-act="weigh" data-id="${s.id}">Pesar</button><button class="btn ghost sm" data-act="edit-spool" data-id="${s.id}">Editar</button><button class="btn ghost sm danger" data-act="del" data-col="spools" data-id="${s.id}">Eliminar</button></div>
   </article>`;
 }
@@ -606,6 +607,14 @@ function vSettings(){
       <div class="field"><label for="s-delivery">Prazo de entrega por defeito (dias úteis)</label><input id="s-delivery" type="number" step="1" min="0" value="${s.delivery}"></div>
       <div class="field"><label for="s-payadj">Pagamento na adjudicação por defeito (%)</label><input id="s-payadj" type="number" step="1" min="0" max="100" value="${s.payAdj}"><span class="hint">O resto paga-se na entrega.</span></div>
     </div>
+    <h2>Horário da oficina</h2>
+    <p class="muted" style="margin:0">O planeamento só marca o início de impressões quando está alguém na oficina. As impressões podem continuar fora de horas.</p>
+    <label class="check"><input type="checkbox" id="s-shopon" ${s.shopOn ? 'checked' : ''}> Só começar impressões dentro do horário</label>
+    <div class="row">
+      <div class="field"><label>Dias abertos</label><div class="days">${[[1,'Seg'],[2,'Ter'],[3,'Qua'],[4,'Qui'],[5,'Sex'],[6,'Sáb'],[0,'Dom']].map(([d, l]) => `<label><input type="checkbox" id="s-day-${d}" ${(s.shopDays || []).includes(d) ? 'checked' : ''}> ${l}</label>`).join('')}</div></div>
+      <div class="field"><label for="s-shopa">Abre às</label><input id="s-shopa" type="time" value="${esc(s.shopStart)}"></div>
+      <div class="field"><label for="s-shopb">Fecha às</label><input id="s-shopb" type="time" value="${esc(s.shopEnd)}"></div>
+    </div>
     <h2>Preço de referência dos materiais (€/kg)</h2>
     <p class="muted" style="margin:0">Usado nos orçamentos quando escolhe um material genérico em vez de uma bobine específica.</p>
     <div class="row">${Object.entries(s.matPrices).map(([k, v]) => `<div class="field"><label for="mp-${k}">${k}</label><input id="mp-${k}" data-mat="${k}" type="number" step="0.5" min="0" value="${v}"></div>`).join('')}</div>
@@ -676,7 +685,50 @@ const activePlan = p => p.status === 'planeada' || p.status === 'a_imprimir';
 function nextFree(printerId, from){
   let t = from ? new Date(from) : new Date(); const now = new Date(); if (t < now) t = now;
   S.plan.filter(p => p.printerId === printerId && activePlan(p)).forEach(p => { const e = planEnd(p); if (e > t) t = e; });
-  return roundUp15(t);
+  return nextStart(roundUp15(t));
+}
+// horário da oficina: as impressões só começam com alguém presente (podem acabar fora de horas)
+const hmMin = t => { const [h, m] = String(t || '0:0').split(':').map(Number); return (h || 0) * 60 + (m || 0); };
+function shopHours(){ const s = settings(); return {on:!!s.shopOn && (s.shopDays || []).length > 0, days:s.shopDays || [], a:hmMin(s.shopStart || '09:00'), b:hmMin(s.shopEnd || '19:00')}; }
+function nextStart(d){
+  const h = shopHours(), x = new Date(d);
+  if (!h.on || h.b <= h.a) return x;
+  for (let i = 0; i < 15; i++){
+    if (h.days.includes(x.getDay())){
+      const open = new Date(x); open.setHours(0, h.a, 0, 0); const close = new Date(x); close.setHours(0, h.b, 0, 0);
+      if (x < open) return open;
+      if (x < close) return x;
+    }
+    x.setDate(x.getDate() + 1); x.setHours(0, 0, 0, 0);
+  }
+  return new Date(d);
+}
+// filamento reservado pelas impressões da fila (ainda não descontado nas bobines)
+function reservations(extra){
+  const sp = {}, mat = {};
+  S.plan.filter(activePlan).concat(extra || []).forEach(p => filsOf(p).forEach(f => {
+    const g = +f.grams || 0; if (!g) return;
+    if (f.spoolId && S.spools.some(s => s.id === f.spoolId)) sp[f.spoolId] = (sp[f.spoolId] || 0) + g;
+    else { const t = matType(f.mat) || 'Sem material'; const k = t + '|' + (matHex(f.mat) || f.hex || ''); (mat[k] = mat[k] || {type:t, hex:matHex(f.mat) || f.hex || '', label:matLabel(f.mat) || t, g:0}).g += g; }
+  }));
+  return {sp, mat};
+}
+function filShortage(extra){
+  const {sp, mat} = reservations(extra), rows = [], free = s => Math.max(0, spoolRemain(s) - (sp[s.id] || 0));
+  Object.entries(sp).forEach(([id, g]) => {
+    const s = S.spools.find(x => x.id === id), have = spoolRemain(s);
+    if (g > have + .5){ const alt = S.spools.filter(x => x.id !== id && x.material === s.material && (x.hex || '').toLowerCase() === (s.hex || '').toLowerCase()).reduce((a, x) => a + free(x), 0);
+      rows.push({label:spoolLabel(s), hex:s.hex, need:g, have, short:g - have, alt, buy:Math.max(0, g - have - alt), spoolId:id}); }
+  });
+  Object.values(mat).forEach(m => {
+    const have = S.spools.filter(x => x.material === m.type).reduce((a, x) => a + free(x), 0);
+    if (m.g > have + .5) rows.push({label:m.label + ' (sem bobine escolhida)', hex:m.hex, need:m.g, have, short:m.g - have, alt:0, buy:m.g - have});
+  });
+  return rows;
+}
+const shortTxt = r => `${esc(r.label)}: precisa de ${num(r.need)} g, há ${num(r.have)} g${r.alt > .5 ? ` (+${num(r.alt)} g noutras bobines iguais)` : ''}`;
+function shortHtml(rows){
+  return rows.map(r => `<div class="l ${r.buy > .5 ? 'neg' : 'warn-txt'}"><span>${swatch(r.hex)} ${shortTxt(r)}</span><span>${r.buy > .5 ? 'faltam ' + num(r.buy) + ' g' : 'trocar de bobine'}</span></div>`).join('');
 }
 function nextNumber(list, prefix){
   const y = today().slice(0, 4), n = list.filter(x => (x.number || '').startsWith(`${prefix}-${y}-`)).map(x => +x.number.split('-')[2] || 0);
@@ -839,8 +891,8 @@ function planOrderDlg(o){
    input: () => {
     const e = buildPlan(o, items);
     const last = e.reduce((m, x) => { const t = planEnd(x); return t > m ? t : m; }, new Date(0));
-    const lateBy = o.due && ymd(last) > o.due;
-    $('#pl-out').innerHTML = `<div class="l"><span>Impressões a criar</span><span>${e.length}</span></div><div class="l"><span>Tempo total de máquina</span><span>${hm(e.reduce((a, x) => a + x.hours, 0))}</span></div><div class="l"><span>Conclusão prevista</span><span>${e.length ? fmtDT(localDT(last)) : '—'}</span></div>${lateBy ? '<div class="l neg"><span>Termina depois do prazo de entrega</span><span></span></div>' : ''}`;
+    const lateBy = o.due && ymd(last) > o.due, short = filShortage(e);
+    $('#pl-out').innerHTML = `<div class="l"><span>Impressões a criar</span><span>${e.length}</span></div><div class="l"><span>Tempo total de máquina</span><span>${hm(e.reduce((a, x) => a + x.hours, 0))}</span></div><div class="l"><span>Conclusão prevista</span><span>${e.length ? fmtDT(localDT(last)) : '—'}</span></div>${lateBy ? '<div class="l neg"><span>Termina depois do prazo de entrega</span><span></span></div>' : ''}${short.length ? '<div class="l neg"><span><b>Filamento insuficiente para a fila</b></span><span></span></div>' + shortHtml(short) : ''}${shopHours().on ? `<div class="l muted"><span>Só começam impressões no horário da oficina (Definições)</span><span></span></div>` : ''}`;
    },
    handler: async () => {
     const e = buildPlan(o, items);
@@ -863,7 +915,7 @@ function buildPlan(o, items){
       const e = withFils({id:uid(), orderId:o.id, orderNumber:o.number, itemId:i.id, partId:i.partId || '', desc:i.desc, thumb:'', printerId:pid,
         qty:q, hours:r2(i.hours * q), start:localDT(free[pid]), status:'planeada', notes:''}, fl);
       e.spoolId = fl[0] ? fl[0].spoolId : '';
-      free[pid] = roundUp15(planEnd(e)); out.push(e); left -= q;
+      free[pid] = nextStart(roundUp15(planEnd(e))); out.push(e); left -= q;
     }
   });
   return out;
@@ -912,18 +964,18 @@ async function pushQueue(printerId, changed){
   list.sort((a, b) => (a.status === 'a_imprimir' ? 0 : 1) - (b.status === 'a_imprimir' ? 0 : 1) || a.start.localeCompare(b.start));
   let t = null;
   for (const x of list){
-    if (t && new Date(x.start) < t && x.status === 'planeada' && x.id !== changed.id){ const c = cp(x); c.start = localDT(roundUp15(t)); await put('plan', c); t = planEnd(c); }
+    if (t && new Date(x.start) < t && x.status === 'planeada' && x.id !== changed.id){ const c = cp(x); c.start = localDT(nextStart(roundUp15(t))); await put('plan', c); t = planEnd(c); }
     else { const e = planEnd(x); t = !t || e > t ? e : t; }
   }
 }
 async function compactQueue(printerId){
   const list = S.plan.filter(x => x.printerId === printerId && activePlan(x));
   const running = list.filter(x => x.status === 'a_imprimir');
-  let t = roundUp15(running.reduce((m, x) => { const e = planEnd(x); return e > m ? e : m; }, new Date()));
+  let t = nextStart(roundUp15(running.reduce((m, x) => { const e = planEnd(x); return e > m ? e : m; }, new Date())));
   let n = 0;
   for (const x of list.filter(x => x.status === 'planeada').sort((a, b) => a.start.localeCompare(b.start))){
     const s = localDT(t); if (s !== x.start){ const c = cp(x); c.start = s; await put('plan', c); n++; }
-    t = roundUp15(planEnd({...x, start:s}));
+    t = nextStart(roundUp15(planEnd({...x, start:s})));
   }
   toast(n ? `Fila reorganizada (${n} ${n === 1 ? 'impressão' : 'impressões'}).` : 'A fila já está seguida.');
 }
@@ -960,12 +1012,15 @@ function gantt(){
   const dayMarks = Array.from({length:days}, (_, i) => new Date(start.getTime() + i * 86400e3));
   const hourStep = days === 1 ? 2 : days <= 3 ? 6 : 12;
   const ticks = []; for (let h = 0; h < days * 24; h += hourStep) if (h % 24) ticks.push(h);
+  const h = shopHours(); let off = '';
+  if (h.on) dayMarks.forEach(d => { const seg = (a, b) => { off += `<i class="g-off" style="left:${pos(new Date(d.getTime() + a * 60e3))}%;width:${(b - a) * 60e3 / span * 100}%"></i>`; };
+    if (!h.days.includes(d.getDay())) seg(0, 1440); else { if (h.a > 0) seg(0, h.a); if (h.b < 1440) seg(h.b, 1440); } });
   const lanes = S.printers.map(pr => {
     const items = S.plan.filter(p => p.printerId === pr.id && p.start).map(p => ({p, s:new Date(p.start), e:planEnd(p)})).filter(x => x.e > start && x.s < end).sort((a, b) => a.s - b.s);
     const act = items.filter(x => activePlan(x.p)); const over = new Set();
     for (let i = 1; i < act.length; i++) if (act[i].s < act[i - 1].e - 60e3){ over.add(act[i].p.id); over.add(act[i - 1].p.id); }
     return `<div class="g-lane"><div class="g-name">${esc(pr.name)}${pr.status === 'parada' ? '<small>parada</small>' : ''}</div><div class="g-track">
-      ${dayMarks.map(d => `<i class="g-sep" style="left:${pos(d)}%"></i>`).join('')}
+      ${off}${dayMarks.map(d => `<i class="g-sep" style="left:${pos(d)}%"></i>`).join('')}
       ${items.map(({p, s, e}) => { const l = Math.max(0, pos(s)), r = Math.min(100, pos(e)); const late = p.status === 'planeada' && s < new Date(now - 30 * 60e3);
         return `<button type="button" class="g-bar ${p.status}${over.has(p.id) ? ' overlap' : ''}${late ? ' late' : ''}" style="left:${l}%;width:${Math.max(.6, r - l)}%" data-act="edit-plan" data-id="${p.id}" title="${esc(`${p.desc} ×${p.qty} · ${fmtDT(p.start)} → ${fmtT(e)} · ${PSTATUS[p.status][0]}${p.orderNumber ? ' · ' + p.orderNumber : ''}`)}"><b>${esc(p.desc)}${p.qty > 1 ? ' ×' + p.qty : ''}</b><span>${fmtT(s)}–${fmtT(e)}${p.orderNumber ? ' · ' + esc(p.orderNumber) : ''}</span></button>`; }).join('')}
       ${now > start && now < end ? `<i class="g-now" style="left:${pos(now)}%"></i>` : ''}
@@ -975,6 +1030,22 @@ function gantt(){
     <div class="g-lane g-head"><div class="g-name"></div><div class="g-track">${dayMarks.map((d, i) => `<span class="g-day" style="left:${pos(d)}%;width:${100 / days}%">${i === 0 ? 'Hoje' : d.toLocaleDateString('pt-PT', {weekday:'short', day:'2-digit', month:'2-digit'})}</span>`).join('')}${ticks.map(h => `<span class="g-tick" style="left:${h / (days * 24) * 100}%">${String(h % 24).padStart(2, '0')}h</span>`).join('')}</div></div>
     ${lanes || '<div class="empty">Adicione impressoras para planear a produção.</div>'}
   </div></div>`;
+}
+function filQueuePanel(){
+  const {sp, mat} = reservations();
+  const rows = Object.entries(sp).map(([id, g]) => { const s = S.spools.find(x => x.id === id); return {s, g, have:spoolRemain(s)}; }).sort((a, b) => (b.g - b.have) - (a.g - a.have));
+  const mrows = Object.values(mat);
+  if (!rows.length && !mrows.length) return '';
+  const short = filShortage(), buy = {};
+  short.filter(r => r.buy > .5).forEach(r => { const k = r.label.replace(' (sem bobine escolhida)', ''); (buy[k] = buy[k] || {hex:r.hex, g:0}).g += r.buy; });
+  return `<section class="panel"><div class="panel-h"><div><h2>Filamento para a fila</h2><small class="muted">O que as impressões planeadas vão gastar, comparado com o que resta nas bobines.</small></div>${Object.keys(buy).length ? '<button class="btn sm" data-act="new-purchase">Registar compra</button>' : ''}</div>
+    <div class="tbl-wrap"><table><thead><tr><th>Bobine</th><th class="r">Reservado</th><th class="r">Restante</th><th class="r">Depois da fila</th></tr></thead><tbody>
+    ${rows.map(({s, g, have}) => `<tr><td>${swatch(s.hex)} ${esc(spoolLabel(s))}</td><td class="r num">${num(g)} g</td><td class="r num">${num(have)} g</td><td class="r num ${g > have + .5 ? 'neg-txt' : ''}">${num(have - g)} g</td></tr>`).join('')}
+    ${mrows.map(m => `<tr><td>${swatch(m.hex)} ${esc(m.label)} <small class="muted">sem bobine escolhida</small></td><td class="r num">${num(m.g)} g</td><td class="r muted">—</td><td></td></tr>`).join('')}
+    </tbody></table></div>
+    ${Object.keys(buy).length ? `<div class="buy"><b>Comprar</b><ul>${Object.entries(buy).map(([k, v]) => `<li>${swatch(v.hex)} ${esc(k)}: faltam <b class="num">${num(v.g)} g</b> (${Math.ceil(v.g / 1000)} bobine${Math.ceil(v.g / 1000) > 1 ? 's' : ''} de 1 kg)</li>`).join('')}</ul></div>`
+      : short.length ? `<p class="muted" style="margin:0">${short.map(shortTxt).join('<br>')}. Troque a bobine nas impressões planeadas.</p>` : '<p class="muted" style="margin:0">Há filamento suficiente para toda a fila.</p>'}
+  </section>`;
 }
 function vProduction(){
   const pend = S.orders.map(o => ({o, s:orderState(o)})).filter(x => x.s.open && x.s.toPlan > 0).sort((a, b) => (a.o.due || '9').localeCompare(b.o.due || '9'));
@@ -995,9 +1066,10 @@ function vProduction(){
     <section class="panel"><div class="panel-h"><h2>Encomendas por planear</h2></div>
       ${pend.length ? `<ul class="alerts">${pend.map(({o, s}) => `<li><span class="pill ${s.late ? 'bad' : 'warn'}">${s.late ? 'Atrasada' : s.toPlan + ' un.'}</span><div class="txt">${esc(o.number)} · ${esc(clientName(o) || 'sem cliente')}<small>Prazo ${fmtDate(o.due)} · ${s.items.filter(i => i.toPlan).map(i => `${i.toPlan}× ${i.desc}`).join(', ')}</small></div><button class="btn sm primary" data-act="plan-order" data-id="${o.id}">Planear</button></li>`).join('')}</ul>` : '<div class="empty">Todas as encomendas em curso estão planeadas.</div>'}
     </section>
+    ${filQueuePanel()}
     <div class="panel-h"><h2>Cronograma</h2><div class="chips">${chip(1, 'Hoje')}${chip(3, '3 dias')}${chip(7, '7 dias')}</div></div>
     ${gantt()}
-    <div class="legend"><span><i class="lg planeada"></i>Planeada</span><span><i class="lg a_imprimir"></i>A imprimir</span><span><i class="lg concluida"></i>Concluída</span><span><i class="lg falhada"></i>Falhada</span><span><i class="lg overlap"></i>Sobreposta</span></div>
+    <div class="legend"><span><i class="lg planeada"></i>Planeada</span><span><i class="lg a_imprimir"></i>A imprimir</span><span><i class="lg concluida"></i>Concluída</span><span><i class="lg falhada"></i>Falhada</span>${shopHours().on ? '<span><i class="lg off"></i>Oficina fechada</span>' : ''}<span><i class="lg overlap"></i>Sobreposta</span></div>
     <h2>Fila por impressora</h2>
     <div class="queue">${queue || '<div class="empty">Sem impressoras.</div>'}</div>`;
 }
@@ -1014,8 +1086,8 @@ function readLogo(file){
       let url = cv.toDataURL('image/png');
       if (url.length > 180000){ const c2 = document.createElement('canvas'); c2.width = cv.width; c2.height = cv.height; const x = c2.getContext('2d'); x.fillStyle = '#fff'; x.fillRect(0, 0, c2.width, c2.height); x.drawImage(cv, 0, 0); url = c2.toDataURL('image/jpeg', .85); }
       st.logo = url;
-      const keep = {}; document.querySelectorAll('#settings-form input, #settings-form textarea').forEach(i => { if (i.id && i.type !== 'file') keep[i.id] = i.value; });
-      render(); Object.entries(keep).forEach(([k, v]) => { const el = document.getElementById(k); if (el) el.value = v; });
+      const keep = {}; document.querySelectorAll('#settings-form input, #settings-form textarea').forEach(i => { if (i.id && i.type !== 'file') keep[i.id] = i.type === 'checkbox' ? i.checked : i.value; });
+      render(); Object.entries(keep).forEach(([k, v]) => { const el = document.getElementById(k); if (el){ if (typeof v === 'boolean') el.checked = v; else el.value = v; } });
       toast('Logótipo carregado. Guarde as definições para o manter.');
     };
     img.onerror = () => toast('Não foi possível ler essa imagem.');
@@ -2059,7 +2131,7 @@ document.addEventListener('click', async e => {
         await exportQuotePdf(n); break;
       }
       case 'quote-pdf-id': await exportQuotePdf(find('quotes')); break;
-      case 'logo-rm': { st.logo = ''; const keep = {}; document.querySelectorAll('#settings-form input, #settings-form textarea').forEach(i => { if (i.id && i.type !== 'file') keep[i.id] = i.value; }); render(); Object.entries(keep).forEach(([k, v]) => { const el = document.getElementById(k); if (el) el.value = v; }); break; }
+      case 'logo-rm': { st.logo = ''; const keep = {}; document.querySelectorAll('#settings-form input, #settings-form textarea').forEach(i => { if (i.id && i.type !== 'file') keep[i.id] = i.type === 'checkbox' ? i.checked : i.value; }); render(); Object.entries(keep).forEach(([k, v]) => { const el = document.getElementById(k); if (el){ if (typeof v === 'boolean') el.checked = v; else el.value = v; } }); break; }
       case 'copy-quote': {
         const txt = quoteText(quoteForm.read());
         try{ await navigator.clipboard.writeText(txt); toast('Resumo copiado. Cole-o num email ou mensagem.'); }
@@ -2096,7 +2168,7 @@ document.addEventListener('submit', async e => {
   if (e.target.id === 'settings-form'){
     const s = settings(), mp = {};
     document.querySelectorAll('[data-mat]').forEach(i => mp[i.dataset.mat] = parseFloat(i.value) || 0);
-    try{ await putSettings({...s, company:val('s-company').trim() || 'Oficina 3D', kwh:numv('s-kwh'), labor:numv('s-labor'), margin:numv('s-margin'), failure:numv('s-failure'), vat:numv('s-vat'), low:numv('s-low'), delivery:numv('s-delivery'), payAdj:Math.min(100, Math.max(0, numv('s-payadj'))), matPrices:mp, cNif:val('s-nif').trim(), cPhone:val('s-phone').trim(), cEmail:val('s-email').trim(), cWeb:val('s-web').trim(), cAddress:val('s-address').trim(), cIban:val('s-iban').trim(), pdfColor:val('s-color') || '#0A7470', cond:val('s-cond').trim(), logo:st.logo !== undefined ? st.logo : (s.logo || '')}); st.logo = undefined; toast('Definições guardadas.'); }catch(err){}
+    try{ await putSettings({...s, company:val('s-company').trim() || 'Oficina 3D', kwh:numv('s-kwh'), labor:numv('s-labor'), margin:numv('s-margin'), failure:numv('s-failure'), vat:numv('s-vat'), low:numv('s-low'), delivery:numv('s-delivery'), payAdj:Math.min(100, Math.max(0, numv('s-payadj'))), shopOn:$('#s-shopon').checked, shopDays:[0,1,2,3,4,5,6].filter(d => $('#s-day-' + d).checked), shopStart:val('s-shopa') || '09:00', shopEnd:val('s-shopb') || '19:00', matPrices:mp, cNif:val('s-nif').trim(), cPhone:val('s-phone').trim(), cEmail:val('s-email').trim(), cWeb:val('s-web').trim(), cAddress:val('s-address').trim(), cIban:val('s-iban').trim(), pdfColor:val('s-color') || '#0A7470', cond:val('s-cond').trim(), logo:st.logo !== undefined ? st.logo : (s.logo || '')}); st.logo = undefined; toast('Definições guardadas.'); }catch(err){}
   }
 });
 document.addEventListener('input', e => {
