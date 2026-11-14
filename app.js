@@ -493,6 +493,8 @@ function render(){
   renderNav();
   if (!loaded){ $('#view').innerHTML = '<div class="loading">A carregar dados…</div>'; return; }
   // link do código QR de uma bobine: #bobine=ID
+  const ol = /^#encomenda=(.+)$/.exec(location.hash);
+  if (ol){ history.replaceState(null, '', '#encomendas'); renderNav(); const o = S.orders.find(x => x.id === decodeURIComponent(ol[1])); setTimeout(() => o ? orderForm(o) : toast('Esta encomenda já não existe.'), 0); }
   const dl = /^#bobine=(.+)$/.exec(location.hash);
   if (dl){ history.replaceState(null, '', '#bobines'); renderNav(); const sp = S.spools.find(x => x.id === decodeURIComponent(dl[1])); setTimeout(() => sp ? spoolDlg(sp) : toast('Esta bobine já não existe.'), 0); }
   const v = current();
@@ -881,7 +883,7 @@ function orderForm(o){
     <div class="field"><label>Embalagem e materiais da entrega</label>${stockEditor('o', o.packs || [])}<span class="hint">${(o.stockUses || []).length ? `Já descontado do stock na entrega: ${esc(stockText(o.stockUses))}.` : 'São descontados do stock quando a encomenda é marcada como entregue.'}</span></div>
     ${F('o-notes', 'Notas', `<textarea id="o-notes">${esc(o.notes)}</textarea>`)}
     ${jobs.length ? `<h3>Impressões registadas</h3><ul class="alerts">${jobs.map(j => `<li><span class="pill ${j.result === 'sucesso' ? 'ok' : 'bad'}">${j.result === 'sucesso' ? 'OK' : 'Falha'}</span><div class="txt">${esc(j.name)}<small>${fmtDate(j.date)} · ${j.qty || 1} un. · ${hm(j.hours)} · ${num(j.grams)} g</small></div></li>`).join('')}</ul>` : ''}`,
-  {wide:true, extra:`<div class="actions"><button type="button" class="btn danger" data-act="del" data-col="orders" data-id="${o.id}">Eliminar</button><button type="button" class="btn" data-act="order-pdf" data-kind="encomenda">PDF da encomenda</button><button type="button" class="btn" data-act="order-pdf" data-kind="entrega">Comprovativo de entrega</button>${stt.toPlan && stt.open ? `<button type="button" class="btn" data-act="plan-order" data-id="${o.id}">Planear produção</button>` : ''}</div>`,
+  {wide:true, extra:`<div class="actions"><button type="button" class="btn danger" data-act="del" data-col="orders" data-id="${o.id}">Eliminar</button><button type="button" class="btn" data-act="order-pdf" data-kind="encomenda">PDF da encomenda</button><button type="button" class="btn" data-act="order-pdf" data-kind="entrega">Comprovativo de entrega</button><button type="button" class="btn" data-act="olabels" data-id="${o.id}">Etiquetas A5</button>${stt.toPlan && stt.open ? `<button type="button" class="btn" data-act="plan-order" data-id="${o.id}">Planear produção</button>` : ''}</div>`,
    handler: async () => { await orderForm.save(); closeDlg(); toast('Encomenda guardada.'); }});
   orderForm.save = async () => {
     const closed = val('o-closed');
@@ -1031,7 +1033,7 @@ function vOrders(){
   const chip = (v, l) => `<button class="chip" data-act="filter" data-k="oFilter" data-v="${v}" aria-pressed="${f === v}">${l}</button>`;
   const openVal = S.orders.filter(o => orderState(o).open).reduce((a, o) => a + (+o.total || 0), 0);
   const dueAll = S.orders.filter(o => orderState(o).status !== 'cancelada').reduce((a, o) => a + orderMoney(o).due, 0);
-  return `<div class="head"><div><div class="eyebrow">Vendas</div><h1>Encomendas</h1><p>Em curso: <span class="num">${eur(openVal)}</span> · por receber: <span class="num">${eur(dueAll)}</span></p></div></div>
+  return `<div class="head"><div><div class="eyebrow">Vendas</div><h1>Encomendas</h1><p>Em curso: <span class="num">${eur(openVal)}</span> · por receber: <span class="num">${eur(dueAll)}</span></p></div>${S.orders.length ? '<div class="actions"><button class="btn" data-act="olabels">Etiquetas A5</button></div>' : ''}</div>
     ${toConvert.length ? `<section class="panel"><div class="panel-h"><h2>Orçamentos aceites por converter</h2></div><ul class="alerts">${toConvert.map(q => `<li><span class="pill ok">Aceite</span><div class="txt">${esc(q.number)} · ${esc(clientName(q) || 'sem cliente')}<small>${eur(calcQuote(q).total)} · prazo ${+q.deliveryDays ? q.deliveryDays + ' dias úteis' : 'não definido'}</small></div><button class="btn sm primary" data-act="convert" data-id="${q.id}">Converter em encomenda</button></li>`).join('')}</ul></section>` : ''}
     <div class="chips">${chip('curso', 'Em curso')}${chip('pronta', 'Prontas')}${chip('entregue', 'Entregues')}${chip('cancelada', 'Canceladas')}${chip('todas', 'Todas')}</div>
     ${rows.length ? `<div class="tbl-wrap"><table><thead><tr><th>Nº</th><th>Cliente</th><th>Peças</th><th>Prazo</th><th style="width:150px">Produção</th><th>Estado</th><th>Pagamento</th><th class="r">Total</th></tr></thead><tbody>
@@ -1732,6 +1734,92 @@ function spoolForm(s){
     await put('spools', s); closeDlg(); toast(isNew ? 'Bobine adicionada.' : 'Bobine atualizada.');
   }});
 }
+/* ---------- etiquetas A5 das encomendas (identificar as peças prontas) ---------- */
+const orderUrl = o => location.origin + location.pathname + '#encomenda=' + encodeURIComponent(o.id);
+function orderLabelsDlg(only){
+  const list = S.orders.map(o => ({o, s:orderState(o)})).filter(({o, s}) => only ? o.id === only : s.status !== 'cancelada' && s.status !== 'entregue')
+    .sort((a, b) => (a.o.due || '9').localeCompare(b.o.due || '9'));
+  if (!list.length){ toast('Não há encomendas por entregar.'); return; }
+  openDlg(only ? `Etiquetas da encomenda ${list[0].o.number}` : 'Etiquetas A5 das encomendas', `<p style="margin:0">Etiquetas em folha A5 (uma por página) para colar na caixa ou no saco das peças prontas. O código QR abre a encomenda na aplicação.</p>
+    <div class="row">${F('ol-mode', 'Tipo de etiqueta', sel('ol-mode', [['enc', 'Uma por encomenda, com a lista de peças'], ['peca', 'Uma por peça (cada linha da encomenda)']], 'enc'))}<div class="field" id="ol-vol-w"><label for="ol-vol">Volumes por encomenda</label>${inp('ol-vol', 1, 'number', 'min="1" max="20" step="1"')}<span class="hint">Imprime "Volume 1 de 2", "2 de 2"…</span></div></div>
+    ${only ? `<input type="checkbox" data-ol="${only}" checked hidden>` : `<div class="lb-list">${list.map(({o, s}) => `<label class="check"><input type="checkbox" data-ol="${o.id}" ${s.status === 'pronta' ? 'checked' : ''}> <b class="mono">${esc(o.number)}</b> ${esc(clientName(o) || 'Sem cliente')} <span class="pill ${OSTATUS[s.status][1]}">${OSTATUS[s.status][0]}</span></label>`).join('')}</div>`}
+    <p class="muted" id="ol-out" style="margin:0"></p>`,
+  {wide:!only, submit:'Gerar PDF', input: () => {
+    $('#ol-vol-w').hidden = val('ol-mode') !== 'enc';
+    const os = [...document.querySelectorAll('[data-ol]:checked')].map(i => S.orders.find(o => o.id === i.dataset.ol)).filter(Boolean);
+    const n = val('ol-mode') === 'enc' ? os.length * Math.max(1, Math.round(numv('ol-vol'))) : os.reduce((a, o) => a + (o.items || []).length, 0);
+    $('#ol-out').textContent = `${n} etiqueta${n === 1 ? '' : 's'} (folhas A5)`;
+  }, handler: async () => {
+    const os = [...document.querySelectorAll('[data-ol]:checked')].map(i => S.orders.find(o => o.id === i.dataset.ol)).filter(Boolean);
+    if (!os.length){ toast('Escolha pelo menos uma encomenda.'); return; }
+    let jsPDF, qr; try{ jsPDF = await ensureJsPDF(); qr = await ensureQR(); }catch(e){ toast('Não foi possível carregar o gerador de PDF. Verifique a ligação.'); return; }
+    let doc; try{ doc = orderLabelsPdf(jsPDF, qr, os, val('ol-mode'), Math.min(20, Math.max(1, Math.round(numv('ol-vol'))))); }catch(e){ console.error(e); toast('Ocorreu um erro ao montar o PDF.'); return; }
+    await downloads.save({filename:(os.length === 1 ? `etiquetas-${os[0].number}` : `etiquetas-encomendas-${today()}`) + '.pdf', data:doc.output('blob')}); closeDlg(); toast('PDF das etiquetas criado.');
+  }});
+}
+function orderLabelsPdf(jsPDF, qrcode, orders, mode, vols){
+  const s = settings(), doc = new jsPDF({unit:'mm', format:'a5', compress:true}), W = 148, H = 210, M = 10, acc = hexRgb(s.pdfColor), ink = [28, 34, 32], grey = [104, 114, 110];
+  const T = (t, x, y, o) => doc.text(pdfT(t), x, y, o), font = (z, st = 'normal', c = ink) => { doc.setFont('helvetica', st); doc.setFontSize(z); doc.setTextColor(...c); };
+  const fit = (t, w, z, st = 'bold') => { font(z, st); while (z > 9 && doc.getTextWidth(pdfT(t)) > w){ z -= 1; doc.setFontSize(z); } return z; };
+  const img = (src, x, y, w, h) => { try{ const p = doc.getImageProperties(src), r = Math.min(w / p.width, h / p.height); doc.addImage(src, p.fileType || 'PNG', x + (w - p.width * r) / 2, y + (h - p.height * r) / 2, p.width * r, p.height * r); return true; }catch(e){ return false; } };
+  let first = true;
+  const page = () => { if (!first) doc.addPage('a5'); first = false; };
+  // cabeçalho comum: empresa, nº da encomenda, cliente, prazo, QR
+  const head = (o, sub) => {
+    doc.setFillColor(...acc); doc.rect(0, 0, W, 9, 'F'); font(9, 'bold', [255, 255, 255]); T(s.company, M, 6); if (sub){ font(9, 'bold', [255, 255, 255]); T(sub, W - M, 6, {align:'right'}); }
+    const qs = 34; drawQR(doc, qrcode, orderUrl(o), W - M - qs + 2, 12, qs);
+    font(8, 'bold', acc); T('ENCOMENDA', M, 19);
+    fit(o.number, W - 2 * M - qs, 30); T(o.number, M, 31);
+    font(8, 'bold', acc); T('CLIENTE', M, 40);
+    const cn = clientName(o) || '—'; const z = fit(cn, W - 2 * M - qs, 20); T(cn, M, 48);
+    doc.setDrawColor(...acc); doc.setLineWidth(.6); doc.line(M, 53, W - M, 53);
+    const due = o.due ? longDate(o.due) : 'A combinar', tot = (o.items || []).reduce((a, i) => a + (+i.qty || 0), 0);
+    font(8, 'bold', acc); T('ENTREGAR ATÉ', M, 60); font(13, 'bold'); T(due, M, 66.5);
+    font(8, 'bold', acc); T('NA ENCOMENDA', 96, 60); font(11, 'bold'); T(`${tot} ${tot === 1 ? 'unidade' : 'unidades'}`, 96, 66.5);
+    return 74;
+  };
+  const foot = (o, txt) => { doc.setDrawColor(210); doc.setLineWidth(.3); doc.line(M, H - 13, W - M, H - 13); font(7.5, 'normal', grey); T(`${o.number} · ${clientName(o) || ''}`, M, H - 8); T(txt || `Impresso em ${fmtDate(today())}`, W - M, H - 8, {align:'right'}); };
+  orders.forEach(o => {
+    const items = o.items || [];
+    if (mode === 'peca'){
+      items.forEach((it, i) => {
+        page(); let y = head(o, `Peça ${i + 1} de ${items.length}`);
+        font(8, 'bold', acc); T('PEÇA', M, y + 2);
+        const z = fit(it.desc || 'Peça', W - 2 * M, 22); const ls = doc.splitTextToSize(pdfT(it.desc || 'Peça'), W - 2 * M).slice(0, 2); ls.forEach((l, k) => doc.text(l, M, y + 11 + k * z * .42)); y += 11 + ls.length * z * .42;
+        const ms = [...new Set(filsOf(it).map(f => clientMat(f.mat)).filter(Boolean))].join(', ');
+        font(10, 'normal', grey); T([it.ref ? 'Ref. ' + it.ref : '', ms].filter(Boolean).join('  ·  '), M, y); y += 6;
+        const bh = H - 13 - 34 - y;
+        if (it.thumb && bh > 30){ doc.setDrawColor(225); doc.roundedRect(M, y, W - 2 * M, bh, 2, 2, 'S'); img(it.thumb, M + 3, y + 3, W - 2 * M - 6, bh - 6); y += bh + 4; } else y += 6;
+        doc.setFillColor(...acc.map(v => Math.round(v * .1 + 255 * .9))); doc.roundedRect(M, H - 13 - 30, W - 2 * M, 25, 2, 2, 'F');
+        font(8, 'bold', acc); T('QUANTIDADE', M + 5, H - 13 - 23); font(26, 'bold'); T(`${it.qty} ${+it.qty === 1 ? 'unidade' : 'unidades'}`, M + 5, H - 13 - 10);
+        foot(o);
+      });
+      return;
+    }
+    for (let v = 1; v <= vols; v++){
+      page(); let y = head(o, vols > 1 ? `Volume ${v} de ${vols}` : '');
+      if (vols > 1){ doc.setFillColor(...acc); doc.roundedRect(W - M - 40, y - 2, 40, 13, 2, 2, 'F'); font(7, 'bold', [255, 255, 255]); T('VOLUME', W - M - 20, y + 2.5, {align:'center'}); font(13, 'bold', [255, 255, 255]); T(`${v} de ${vols}`, W - M - 20, y + 9, {align:'center'}); }
+      font(8, 'bold', acc); T('PEÇAS', M, y + 2); y += 6;
+      const n = items.length, avail = H - 13 - (o.notes ? 26 : 8) - y, rh = Math.max(9, Math.min(24, avail / Math.max(1, n))), th = rh >= 15;
+      const shown = items.slice(0, Math.floor(avail / rh));
+      shown.forEach((it, i) => {
+        const yy = y + i * rh; doc.setDrawColor(225); doc.setLineWidth(.25); doc.line(M, yy + rh, W - M, yy + rh);
+        doc.setDrawColor(...grey); doc.setLineWidth(.35); doc.rect(M, yy + rh / 2 - 2.5, 5, 5);
+        let x = M + 8; if (th && it.thumb && img(it.thumb, x, yy + 1.5, rh - 3, rh - 3)) x += rh;
+        font(rh >= 15 ? 11.5 : 10, 'bold'); T(doc.splitTextToSize(pdfT(it.desc || 'Peça'), W - M - 32 - x)[0], x, yy + rh / 2 + (it.ref ? -.5 : 1.5));
+        if (it.ref){ font(8, 'normal', grey); T('Ref. ' + it.ref, x, yy + rh / 2 + 4); }
+        font(rh >= 15 ? 16 : 12, 'bold'); T(`× ${it.qty}`, W - M - 2, yy + rh / 2 + 2, {align:'right'});
+      });
+      if (shown.length < n){ font(9, 'bold', [176, 42, 42]); T(`+ ${n - shown.length} peças (ver a encomenda)`, M, y + shown.length * rh + 6); }
+      const tot = items.reduce((a, i) => a + (+i.qty || 0), 0);
+      font(9.5, 'bold'); T(`Total: ${tot} ${tot === 1 ? 'unidade' : 'unidades'}`, W - M, y + shown.length * rh + 6, {align:'right'});
+      if (o.notes){ font(8, 'bold', acc); T('NOTAS', M, H - 13 - 16); font(8.5, 'normal'); doc.splitTextToSize(pdfT(o.notes), W - 2 * M).slice(0, 2).forEach((l, k) => doc.text(l, M, H - 13 - 11 + k * 4)); }
+      foot(o);
+    }
+  });
+  doc.setProperties({title:pdfT('Etiquetas de encomendas'), creator:pdfT(s.company)});
+  return doc;
+}
 /* ---------- etiquetas QR das bobines ---------- */
 const spoolUrl = s => location.origin + location.pathname + '#bobine=' + encodeURIComponent(s.id);
 const spoolCode = s => String(s.id).slice(-6).toUpperCase();
@@ -2375,6 +2463,7 @@ document.addEventListener('click', async e => {
       case 'edit-spool': spoolForm(find('spools')); break;
       case 'weigh': weighForm(find('spools')); break;
       case 'labels': labelsDlg(b.dataset.id); break;
+      case 'olabels': orderLabelsDlg(b.dataset.id); break;
       case 'new-printer': printerForm(); break;
       case 'edit-printer': printerForm(find('printers')); break;
       case 'new-maint': maintForm(id); break;
