@@ -394,3 +394,21 @@ body.pub-mode{place-items:start center}
 @media (max-width:600px){.pub{padding:18px 14px}.pub table th:nth-child(4),.pub table td:nth-child(4){display:none}}
 a.btn{text-decoration:none;color:var(--fg)}
 a.btn.primary{color:#fff}
+
+/* artigos compostos e acabamento */
+.step-sugg{display:flex;flex-wrap:wrap;gap:6px}
+.step-sugg .chip{font-size:.8rem;padding:3px 10px}
+.qitem.art .qi-mat{visibility:hidden}
+.art-sum{display:flex;flex-direction:column;gap:4px}
+.art-sum .l{display:flex;justify-content:space-between;gap:12px}
+.art-sum .l.tot{border-top:1px solid var(--line);padding-top:6px;margin-top:2px}
+.art-sum .l.neg{color:var(--bad)}
+.fin-list{display:flex;flex-direction:column;gap:10px}
+.fin{border:1px solid var(--line);border-radius:8px;padding:10px 12px;display:flex;flex-direction:column;gap:8px}
+.fin-h{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.fin-h .pill:last-child{margin-left:auto}
+.fin-steps{display:flex;flex-wrap:wrap;gap:6px 18px}
+.fin-steps .check{font-size:.88rem}
+.fin-order{display:flex;flex-direction:column;gap:8px;padding:10px 0;border-top:1px solid var(--line)}
+.fin-order:first-of-type{border-top:0}
+.fin-oh a{color:inherit;text-decoration:none}

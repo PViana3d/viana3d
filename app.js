@@ -398,21 +398,53 @@ function stockEditor(px, list){
 stockEditor.row = (px, u = {}) => { const r = uid(); const opts = [['', '— Material —']].concat([...S.stock].sort((a, b) => a.name.localeCompare(b.name, 'pt')).map(x => [x.id, `${x.name} (${qtyTxt(x.qty, x.unit)})`]));
   return `<div class="srow" data-r="${r}">${F(`${px}-ss-${r}`, 'Material', sel(`${px}-ss-${r}`, opts, u.stockId || ''))}${F(`${px}-sq-${r}`, 'Quantidade', inp(`${px}-sq-${r}`, u.qty ?? 1, 'number', 'min="0" step="any"'))}<button type="button" class="btn ghost" data-act="rm-srow" aria-label="Remover material">✕</button></div>`; };
 const readStock = px => [...document.querySelectorAll(`#${px}-stock .srow`)].map(r => ({stockId:val(`${px}-ss-${r.dataset.r}`), qty:r2(numv(`${px}-sq-${r.dataset.r}`))})).filter(u => u.stockId && u.qty > 0);
+/* ---------- artigos compostos e passos de acabamento ---------- */
+const isArt = x => !!x && x.kind === 'artigo';
+const stepsMin = x => (x.steps || []).reduce((a, t) => a + (+t.min || 0), 0);
+const costsOf = x => (x.costs || []).reduce((a, c) => a + (+c.eur || 0), 0);
+const compsText = it => (it.comps || []).map(c => `${c.qty}× ${c.desc}`).join(', ');
+const STEP_SUGG = ['Remover suportes', 'Lixar', 'Primário', 'Pintar', 'Colar', 'Montar', 'Instalar iluminação', 'Verificar'];
+function stepsEditor(px, steps){
+  return `<div class="items" id="${px}-steps">${(steps || []).map(t => stepsEditor.row(px, t)).join('')}</div><div class="srow-add step-sugg">${STEP_SUGG.map(n => `<button type="button" class="chip" data-act="add-step" data-px="${px}" data-name="${esc(n)}">+ ${esc(n)}</button>`).join('')}<button type="button" class="chip" data-act="add-step" data-px="${px}">+ Outro</button></div>`;
+}
+stepsEditor.row = (px, t = {}) => { const r = t.id || uid(); return `<div class="srow step-row" data-r="${r}">${F(`${px}-tn-${r}`, 'Passo', inp(`${px}-tn-${r}`, t.name || '', 'text', 'placeholder="ex.: Pintar"'))}${F(`${px}-tm-${r}`, 'Tempo (min)', inp(`${px}-tm-${r}`, t.min ?? 10, 'number', 'min="0" step="1"'))}<button type="button" class="btn ghost" data-act="rm-srow" aria-label="Remover passo">✕</button></div>`; };
+const readSteps = px => [...document.querySelectorAll(`#${px}-steps .step-row`)].map(r => ({id:r.dataset.r, name:val(`${px}-tn-${r.dataset.r}`).trim(), min:Math.max(0, Math.round(numv(`${px}-tm-${r.dataset.r}`)))})).filter(t => t.name);
+// artigo do catálogo → linha com uma cópia de cada peça que o compõe
+function expandArt(p, compFils, qty = 1){
+  const comps = (p.comps || []).map(c => { const pp = S.parts.find(x => x.id === c.partId); if (!pp || isArt(pp)) return null;
+    return withFils({id:c.id, partId:pp.id, desc:pp.name, ref:pp.ref || '', qty:+c.qty || 1, hours:+pp.hours || 0, laborH:+pp.laborH || 0, changes:+pp.changes || 0, purgeG:pp.purgeG ?? null, mats:cp(pp.mats || []), steps:cp(pp.steps || [])},
+      compFils ? compFils(pp, (+c.qty || 1) * qty) : filsOf(pp)); }).filter(Boolean);
+  return {kind:'artigo', partId:p.id, desc:p.name, ref:p.ref || '', thumb:p.thumb || '', comps, mats:cp(p.mats || []), steps:cp(p.steps || []), costs:cp(p.costs || []), fixedPrice:p.fixedPrice ?? null};
+}
+const hasFixed = it => isArt(it) && it.fixedPrice != null && it.fixedPrice !== '';
+// totais por artigo (gramas e horas de impressão)
+const artTotals = it => (it.comps || []).reduce((a, c) => ({g:a.g + sumG(filsOf(c)) * (+c.qty || 0), h:a.h + (+c.hours || 0) * (+c.qty || 0)}), {g:0, h:0});
 function calcQuote(q){
   const s = settings();
   const pr = S.printers.find(p => p.id === q.printerId) || {};
   const watts = +pr.watts || 0, wearH = pr.price && pr.life ? pr.price / pr.life : 0;
   const rate = q.laborRate == null || q.laborRate === '' ? s.labor : +q.laborRate || 0;
   const fail = (+q.failure || 0) / 100, mk = 1 + (+q.margin || 0) / 100;
-  const lines = (q.items || []).map(it => {
-    const qty = Math.max(0, +it.qty || 0), fl = filsOf(it), g = sumG(fl), h = +it.hours || 0;
+  // custo de uma unidade: peça impressa, ou artigo = soma das peças + materiais + passos + outros custos
+  const unit = it => {
+    if (isArt(it)){
+      const a = {material:0, purge:0, stockMat:0, other:0, energy:0, machine:0, failure:0, labor:0, g:0, pg:0, h:0};
+      (it.comps || []).forEach(c => { const u = unit(c), k = +c.qty || 0; Object.keys(a).forEach(x => { a[x] += (u[x] || 0) * k; }); });
+      a.stockMat += stockCostOf(it.mats); a.other += costsOf(it); a.labor += stepsMin(it) / 60 * rate;
+      return a;
+    }
+    const fl = filsOf(it), g = sumG(fl), h = +it.hours || 0;
     const material = fl.reduce((a, f) => a + f.grams / 1000 * matEurKg(f.mat), 0), energy = h * watts / 1000 * s.kwh, machine = h * wearH;
     const pg = purgeOf(it), purge = pg / 1000 * (g ? material / g * 1000 : matEurKg((fl[0] || {}).mat));
     const stockMat = stockCostOf(it.mats);
-    const failure = (material + purge + energy + machine) * fail, labor = (+it.laborH || 0) * rate;
-    const unitCost = material + purge + stockMat + energy + machine + failure + labor, unitPrice = unitCost * mk;
+    const failure = (material + purge + energy + machine) * fail, labor = ((+it.laborH || 0) + stepsMin(it) / 60) * rate;
+    return {material, purge, stockMat, other:0, energy, machine, failure, labor, g, pg, h};
+  };
+  const lines = (q.items || []).map(it => {
+    const qty = Math.max(0, +it.qty || 0), u = unit(it);
+    const unitCost = u.material + u.purge + u.stockMat + u.other + u.energy + u.machine + u.failure + u.labor, unitPrice = hasFixed(it) ? +it.fixedPrice : unitCost * mk;
     const gross = unitPrice * qty, disc = gross * Math.min(100, Math.max(0, +it.disc || 0)) / 100;
-    return {qty, grams:g * qty, purgeG:pg * qty, purge:purge * qty, stockMat:stockMat * qty, hours:h * qty, material:material * qty, energy:energy * qty, machine:machine * qty, failure:failure * qty, labor:labor * qty, cost:unitCost * qty, unitPrice, gross, disc, net:gross - disc};
+    return {qty, grams:u.g * qty, purgeG:u.pg * qty, purge:u.purge * qty, stockMat:u.stockMat * qty, other:u.other * qty, hours:u.h * qty, material:u.material * qty, energy:u.energy * qty, machine:u.machine * qty, failure:u.failure * qty, labor:u.labor * qty, cost:unitCost * qty, unitCost, unitPrice, gross, disc, net:gross - disc};
   });
   const sum = k => lines.reduce((a, l) => a + l[k], 0);
   const extraLabor = (+q.laborH || 0) * rate, extraLaborPrice = extraLabor * mk, extras = +q.extras || 0;
@@ -420,7 +452,7 @@ function calcQuote(q){
   const gross = sum('gross') + extraLaborPrice + extras;
   const discount = sum('disc'), net = gross - discount, profit = net - cost;
   const vat = q.vat ? net * s.vat / 100 : 0;
-  return {lines, rate, purge:sum('purge'), purgeG:sum('purgeG'), stockMat:sum('stockMat'), material:sum('material'), energy:sum('energy'), machine:sum('machine'), failure:sum('failure'), labor:sum('labor') + extraLabor, extraLaborPrice, extras,
+  return {lines, rate, other:sum('other'), purge:sum('purge'), purgeG:sum('purgeG'), stockMat:sum('stockMat'), material:sum('material'), energy:sum('energy'), machine:sum('machine'), failure:sum('failure'), labor:sum('labor') + extraLabor, extraLaborPrice, extras,
     cost, gross, discount, net, profit, vat, total:r2(net + vat), grams:sum('grams'), hours:sum('hours')};
 }
 const monthOf = d => (d || '').slice(0, 7);
@@ -443,7 +475,8 @@ function alerts(){
   S.orders.forEach(o => { const s = orderState(o); if (!s.open) return; const dl = o.due ? businessDaysBetween(today(), o.due) : 99;
     if (s.late) out.push({cls:'bad', title:`Encomenda ${o.number} · ${clientName(o) || 'sem cliente'}`, sub:`Prazo ultrapassado (${fmtDate(o.due)}) · ${s.done}/${s.total} unidades feitas`, href:'#encomendas'});
     else if (dl <= 2) out.push({cls:'warn', title:`Encomenda ${o.number} · ${clientName(o) || 'sem cliente'}`, sub:`Entrega ${dl === 0 ? 'hoje' : 'em ' + dl + ' dias úteis'} · ${s.done}/${s.total} unidades feitas`, href:'#encomendas'});
-    if (s.toPlan) out.push({cls:'info', title:`Encomenda ${o.number}: ${s.toPlan} unidades por planear`, sub:`Prazo ${fmtDate(o.due)}`, href:'#producao'}); });
+    if (s.toPlan) out.push({cls:'info', title:`Encomenda ${o.number}: ${s.toPlan} unidades por planear`, sub:`Prazo ${fmtDate(o.due)}`, href:'#producao'});
+    if (s.status === 'acabamento') out.push({cls:'warn', title:`Encomenda ${o.number}: falta acabamento`, sub:`${s.fin.reduce((a, f) => a + f.n - f.nDone, 0)} passos por fazer (${s.fin.filter(f => !f.complete).map(f => f.it.desc).join(', ')})`, href:'#producao'}); });
   S.orders.forEach(o => {
     const s0 = orderState(o); if (s0.status === 'cancelada') return;
     const mo = orderMoney(o); if (!(mo.total > 0)) return;
@@ -676,16 +709,21 @@ function vSettings(){
   <section class="panel"><div class="panel-h"><h2>Conta</h2></div><p style="margin:0">Sessão iniciada como <b>${esc(ME ? ME.email : '')}</b>.</p><div class="actions"><button type="button" class="btn" data-act="logout">Terminar sessão</button></div></section>`;
 }
 
+function artListRow(p){
+  const e = expandArt(p), t = artTotals(e), n = e.comps.reduce((a, c) => a + c.qty, 0), sm = stepsMin(e) + e.comps.reduce((a, c) => a + (stepsMin(c) + (+c.laborH || 0) * 60) * c.qty, 0);
+  return `<tr class="click" data-act="edit-part" data-id="${p.id}" tabindex="0"><td style="width:52px">${thumbImg(p.thumb)}</td><td><b>${esc(p.name)}</b> <span class="pill info">Artigo</span>${p.ref ? `<br><small class="muted mono">${esc(p.ref)}</small>` : ''}<br><small class="muted">${esc(compsText(e))}${(p.mats || []).length ? ' · ' + esc(stockText(p.mats)) : ''}</small></td><td>${esc(clientName(p) || 'Geral')}</td><td>${n} peça${n === 1 ? '' : 's'}</td><td class="r num">${num(t.g, 1)} g</td><td class="r num">${hm(t.h)}</td><td class="r num">${sm ? sm + ' min' : '—'}</td><td class="r num"><b>${eur(partPrice(p))}</b>${hasFixed(p) ? '<br><small class="muted">fixo</small>' : ''}</td>
+    <td class="r" style="white-space:nowrap"><button class="btn ghost sm" data-act="quote-part" data-id="${p.id}">Orçamentar</button><button class="btn ghost sm danger" data-act="del" data-col="parts" data-id="${p.id}">Eliminar</button></td></tr>`;
+}
 function vParts(){
   const q = st.partQ.trim().toLowerCase();
   const list = S.parts.filter(p => (!st.partClient || (st.partClient === '__geral' ? !p.clientId : p.clientId === st.partClient)) && (!q || `${p.name} ${p.ref} ${clientName(p)}`.toLowerCase().includes(q)))
     .sort((a, b) => a.name.localeCompare(b.name, 'pt'));
-  return `<div class="head"><div><div class="eyebrow">Catálogo</div><h1>Peças</h1><p>${S.parts.length} peças guardadas. Os orçamentos são montados a partir daqui.</p></div>
-    <div class="actions"><button class="btn" data-act="import-parts">Importar G-code</button><button class="btn primary" data-act="new-part">Nova peça</button></div></div>
+  return `<div class="head"><div><div class="eyebrow">Catálogo</div><h1>Peças</h1><p>${(n => `${n} peça${n === 1 ? '' : 's'}`)(S.parts.filter(x => !isArt(x)).length)}${S.parts.some(isArt) ? ` e ${S.parts.filter(isArt).length} artigo${S.parts.filter(isArt).length === 1 ? '' : 's'} composto${S.parts.filter(isArt).length === 1 ? '' : 's'}` : ''} no catálogo. Os orçamentos são montados a partir daqui.</p></div>
+    <div class="actions"><button class="btn" data-act="import-parts">Importar G-code</button><button class="btn" data-act="new-art">Novo artigo composto</button><button class="btn primary" data-act="new-part">Nova peça</button></div></div>
     <div class="filters"><div class="field" style="flex:1;min-width:200px"><label for="f-part-q">Procurar</label><input id="f-part-q" type="search" value="${esc(st.partQ)}" placeholder="Nome, referência ou cliente"></div>
       <div class="field"><label for="f-part-client">Cliente</label>${sel('f-part-client', [['', 'Todos'], ['__geral', 'Gerais (sem cliente)']].concat(clientOpts()), st.partClient)}</div></div>
     ${list.length ? `<div class="tbl-wrap"><table><thead><tr><th></th><th>Peça</th><th>Cliente</th><th>Material</th><th class="r">Filamento</th><th class="r">Impressão</th><th class="r">Mão de obra</th><th class="r">Preço ref.</th><th></th></tr></thead><tbody>
-      ${list.map(p => `<tr class="click" data-act="edit-part" data-id="${p.id}" tabindex="0"><td style="width:52px">${thumbImg(p.thumb)}</td><td><b>${esc(p.name)}</b>${p.ref ? `<br><small class="muted mono">${esc(p.ref)}</small>` : ''}</td><td>${esc(clientName(p) || 'Geral')}</td><td>${filsOf(p).length > 1 ? `<span class="sws">${filsOf(p).map(f => swatch(matHex(f.mat) || f.hex)).join('')}</span>` : ''}${esc(filsTypes(p) || '—')}${filsOf(p).length > 1 ? ` <small class="muted">(${filsOf(p).length} filamentos)</small>` : ''}</td><td class="r num">${num(sumG(filsOf(p)), 1)} g</td><td class="r num">${hm(p.hours)}</td><td class="r num">${p.laborH ? num(p.laborH * 60) + ' min' : '—'}</td><td class="r num">${eur(partPrice(p))}</td>
+      ${list.map(p => isArt(p) ? artListRow(p) : `<tr class="click" data-act="edit-part" data-id="${p.id}" tabindex="0"><td style="width:52px">${thumbImg(p.thumb)}</td><td><b>${esc(p.name)}</b>${p.ref ? `<br><small class="muted mono">${esc(p.ref)}</small>` : ''}</td><td>${esc(clientName(p) || 'Geral')}</td><td>${filsOf(p).length > 1 ? `<span class="sws">${filsOf(p).map(f => swatch(matHex(f.mat) || f.hex)).join('')}</span>` : ''}${esc(filsTypes(p) || '—')}${filsOf(p).length > 1 ? ` <small class="muted">(${filsOf(p).length} filamentos)</small>` : ''}</td><td class="r num">${num(sumG(filsOf(p)), 1)} g</td><td class="r num">${hm(p.hours)}</td><td class="r num">${p.laborH ? num(p.laborH * 60) + ' min' : '—'}</td><td class="r num">${eur(partPrice(p))}</td>
         <td class="r" style="white-space:nowrap"><button class="btn ghost sm" data-act="quote-part" data-id="${p.id}">Orçamentar</button><button class="btn ghost sm danger" data-act="del" data-col="parts" data-id="${p.id}">Eliminar</button></td></tr>`).join('')}
     </tbody></table></div><p class="muted" style="margin:0;font-size:.82rem">Preço de referência por unidade, sem IVA, com as margens das Definições e a primeira impressora. No orçamento pode ajustar tudo.</p>`
     : `<div class="empty">${S.parts.length ? 'Nenhuma peça corresponde à pesquisa.' : 'Ainda não tem peças no catálogo. Crie uma à mão ou importe ficheiros G-code.'}<div class="actions"><button class="btn" data-act="import-parts">Importar G-code</button><button class="btn" data-act="new-part">Nova peça</button></div></div>`}`;
@@ -705,7 +743,7 @@ function vClients(){
 }
 
 /* ---------- encomendas e produção ---------- */
-const OSTATUS = {pendente:['Por planear','warn'], planeada:['Planeada','info'], em_producao:['Em produção','info'], pronta:['Pronta','ok'], entregue:['Entregue',''], cancelada:['Cancelada','bad']};
+const OSTATUS = {pendente:['Por planear','warn'], planeada:['Planeada','info'], em_producao:['Em produção','info'], acabamento:['Em acabamento','warn'], pronta:['Pronta','ok'], entregue:['Entregue',''], cancelada:['Cancelada','bad']};
 const PSTATUS = {planeada:['Planeada','info'], a_imprimir:['A imprimir','warn'], concluida:['Concluída','ok'], falhada:['Falhada','bad']};
 const ymd = x => `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`;
 const localDT = x => `${ymd(x)}T${String(x.getHours()).padStart(2, '0')}:${String(x.getMinutes()).padStart(2, '0')}`;
@@ -768,8 +806,16 @@ function nextNumber(list, prefix){
   const y = today().slice(0, 4), n = list.filter(x => (x.number || '').startsWith(`${prefix}-${y}-`)).map(x => +x.number.split('-')[2] || 0);
   return `${prefix}-${y}-${String((n.length ? Math.max(...n) : 0) + 1).padStart(3, '0')}`;
 }
+// unidades a imprimir: as peças, e cada peça dos artigos compostos (× artigos)
+const prodUnits = o => (o.items || []).flatMap(it => isArt(it) ? (it.comps || []).map(c => ({...c, id:it.id + '_' + c.id, parentId:it.id, desc:`${c.desc} · ${it.desc}`, qty:(+c.qty || 0) * (+it.qty || 0)})) : [it]);
+// passos acompanhados na encomenda: os das peças de cada artigo + os do artigo (sem passos = "Montagem")
+function trackSteps(it){
+  if (!isArt(it)) return cp(it.steps || []);
+  const st = (it.comps || []).flatMap(c => (c.steps || []).map(t => ({id:c.id + '_' + t.id, name:`${t.name} · ${c.desc}`, min:(+t.min || 0) * (+c.qty || 1)}))).concat(cp(it.steps || []));
+  return st.length ? st : [{id:'montagem', name:'Montagem', min:0}];
+}
 function orderState(o){
-  const items = (o.items || []).map(it => {
+  const items = prodUnits(o).map(it => {
     const done = S.jobs.filter(j => j.orderId === o.id && j.itemId === it.id && j.result === 'sucesso').reduce((a, j) => a + (+j.qty || 1), 0);
     const pl = S.plan.filter(p => p.orderId === o.id && p.itemId === it.id && activePlan(p));
     const planned = pl.reduce((a, p) => a + (+p.qty || 0), 0);
@@ -778,9 +824,15 @@ function orderState(o){
   const sum = k => items.reduce((a, i) => a + i[k], 0);
   const total = items.reduce((a, i) => a + (+i.qty || 0), 0), done = items.reduce((a, i) => a + Math.min(i.done, +i.qty || 0), 0);
   const planned = sum('planned'), toPlan = sum('toPlan');
-  const status = o.closed || (total && done >= total ? 'pronta' : (done > 0 || items.some(i => i.printing)) ? 'em_producao' : planned > 0 ? 'planeada' : 'pendente');
+  const fin = (o.items || []).filter(it => (it.steps || []).length).map(it => {
+    const us = items.filter(u => u.id === it.id || u.parentId === it.id), sd = it.stepsDone || {};
+    const nDone = it.steps.filter(t => sd[t.id]).length;
+    return {it, printed:us.every(u => u.done >= (+u.qty || 0)), nDone, n:it.steps.length, complete:nDone === it.steps.length};
+  });
+  const finOk = fin.every(f => f.complete), printedAll = done >= total;
+  const status = o.closed || ((total || fin.length) && printedAll ? (finOk ? 'pronta' : 'acabamento') : (done > 0 || items.some(i => i.printing) || fin.some(f => f.nDone)) ? 'em_producao' : planned > 0 ? 'planeada' : 'pendente');
   const open = !['pronta', 'entregue', 'cancelada'].includes(status);
-  return {items, total, done, planned, toPlan, status, open, late: open && o.due && o.due < today(), pct: total ? done / total : 0};
+  return {items, fin, total, done, planned, toPlan, status, open, late: open && o.due && o.due < today(), pct: total ? done / total : 0};
 }
 const orderOf = q => S.orders.find(o => o.quoteId === q.id);
 
@@ -790,8 +842,11 @@ async function convertQuote(q){
   const c = calcQuote(q);
   const o = {id:uid(), number:nextNumber(S.orders, 'ENC'), quoteId:q.id, quoteNumber:q.number, clientId:q.clientId || '', client:clientName(q), date:today(),
     due: addBusinessDays(today(), +q.deliveryDays || 0), closed:'', notes:q.notes || '', total:c.total, net:c.net, plannedCost:r2(c.cost), plannedProfit:r2(c.profit), payAdj:paySplit(q, c.total).pAdj, printerId:q.printerId || '',
-    items:(q.items || []).map(it => withFils({id:it.id, partId:it.partId || '', desc:it.desc, ref:it.ref || '', hours:+it.hours || 0, qty:+it.qty || 1, mats:cp(it.mats || []), thumb:it.thumb || ''}, filsOf(it))), packs:cp(settings().packs || [])};
-  if (JSON.stringify(o).length > 200000) o.items.forEach(it => { it.thumb = ''; });
+    items:(q.items || []).map(it => isArt(it)
+      ? {id:it.id, partId:it.partId || '', kind:'artigo', desc:it.desc, ref:it.ref || '', qty:+it.qty || 1, thumb:it.thumb || '', mats:cp(it.mats || []), steps:trackSteps(it), stepsDone:{},
+         comps:(it.comps || []).map(c => withFils({id:c.id, partId:c.partId || '', desc:c.desc, ref:c.ref || '', qty:+c.qty || 1, hours:+c.hours || 0, mats:cp(c.mats || []), thumb:(S.parts.find(x => x.id === c.partId) || {}).thumb || ''}, filsOf(c)))}
+      : withFils({id:it.id, partId:it.partId || '', desc:it.desc, ref:it.ref || '', hours:+it.hours || 0, qty:+it.qty || 1, mats:cp(it.mats || []), steps:trackSteps(it), stepsDone:{}, thumb:it.thumb || ''}, filsOf(it))), packs:cp(settings().packs || [])};
+  if (JSON.stringify(o).length > 200000) o.items.forEach(it => { it.thumb = ''; (it.comps || []).forEach(c => { c.thumb = ''; }); });
   if (q.status !== 'aceite') await put('quotes', {...q, status:'aceite'});
   await put('orders', o);
   toast(`Encomenda ${o.number} criada.`);
@@ -822,9 +877,11 @@ function orderResult(o){
     mat += m; energy += e; wear += w;
     if (j.result === 'falha'){ failed += m + e + w; nFail++; }
   });
-  const stockCost = jobs.reduce((a, j) => a + (j.stockUses || []).reduce((b, u) => b + (+u.qty || 0) * (+u.cost || 0), 0), 0) + (o.stockUses || []).reduce((b, u) => b + (+u.qty || 0) * (+u.cost || 0), 0);
-  const labor = q ? ((q.items || []).reduce((a, it) => a + (+it.laborH || 0) * (+it.qty || 0), 0) + (+q.laborH || 0)) * rate : 0;
-  const extras = q ? +q.extras || 0 : 0;
+  const uc = l => (l || []).reduce((b, u) => b + (+u.qty || 0) * (+u.cost || 0), 0);
+  const stockCost = jobs.reduce((a, j) => a + uc(j.stockUses), 0) + uc(o.stockUses) + uc(o.asmUses);
+  const cq = q ? calcQuote(q) : null;
+  const labor = cq ? cq.labor : 0;
+  const extras = q ? (+q.extras || 0) + cq.other : 0;
   const cost = mat + energy + wear + labor + extras + stockCost;
   const revenue = o.net != null ? +o.net : (q ? calcQuote(q).net : 0);
   const planned = o.plannedProfit != null ? +o.plannedProfit : (q ? calcQuote(q).profit : null);
@@ -860,7 +917,7 @@ function moneyPanel(o){
 function resultPanel(o){
   const r = orderResult(o), L = (l, v, cls = '') => `<div class="l ${cls}"><span>${l}</span><span>${v}</span></div>`;
   return `<section class="panel"><div class="panel-h"><h3>Lucro real</h3>${r.nJobs ? `<span class="pill ${r.profit < 0 ? 'bad' : r.planned != null && r.profit < r.planned - 0.01 ? 'warn' : 'ok'}">${pctTxt(r2(r.margin))} de margem</span>` : ''}</div>
-    ${r.nJobs ? `<div class="sum result">${L('Valor sem IVA', eur(r.revenue))}${L('Filamento gasto', '−' + eur(r.mat), 'sub')}${L('Energia e desgaste', '−' + eur(r.energy + r.wear), 'sub')}${L('Mão de obra (do orçamento)', '−' + eur(r.labor), 'sub')}${r.extras ? L('Extras', '−' + eur(r.extras), 'sub') : ''}${r.stockCost ? L('Materiais do stock', '−' + eur(r.stockCost), 'sub') : ''}<hr>${L('Lucro real', eur(r.profit), r.profit < 0 ? 'neg total' : 'total')}${r.planned != null ? L('Lucro previsto no orçamento', eur(r.planned), 'sub') : ''}${r.nFail ? L(`Custo das ${r.nFail} impressões falhadas`, eur(r.failed), 'neg') : ''}</div>
+    ${r.nJobs ? `<div class="sum result">${L('Valor sem IVA', eur(r.revenue))}${L('Filamento gasto', '−' + eur(r.mat), 'sub')}${L('Energia e desgaste', '−' + eur(r.energy + r.wear), 'sub')}${L('Mão de obra (do orçamento)', '−' + eur(r.labor), 'sub')}${r.extras ? L('Extras e outros custos', '−' + eur(r.extras), 'sub') : ''}${r.stockCost ? L('Materiais do stock', '−' + eur(r.stockCost), 'sub') : ''}<hr>${L('Lucro real', eur(r.profit), r.profit < 0 ? 'neg total' : 'total')}${r.planned != null ? L('Lucro previsto no orçamento', eur(r.planned), 'sub') : ''}${r.nFail ? L(`Custo das ${r.nFail} impressões falhadas`, eur(r.failed), 'neg') : ''}</div>
       <p class="hint muted" style="margin:0">Conta com as ${r.nJobs} impressões registadas nesta encomenda (incluindo as falhadas), ao custo real de cada bobine.</p>` : '<p class="muted" style="margin:0">Aparece quando registar impressões desta encomenda.</p>'}
   </section>`;
 }
@@ -869,6 +926,29 @@ async function addPayment(o, pay){
   await put('orders', o); return o;
 }
 
+// passos de acabamento de cada linha, para assinalar
+function finHtml(o, stt){
+  return `<div class="fin-list">${stt.fin.map(f => { const sd = f.it.stepsDone || {};
+    return `<div class="fin"><div class="fin-h"><b>${esc(f.it.desc)}</b> <span class="muted">× ${f.it.qty}</span>${isArt(f.it) ? ' <span class="pill info">Artigo</span>' : ''}<span class="pill ${f.complete ? 'ok' : f.printed ? 'warn' : ''}">${f.complete ? 'Concluído' : f.printed ? `Falta${f.n - f.nDone > 1 ? 'm' : ''} ${f.n - f.nDone} passo${f.n - f.nDone > 1 ? 's' : ''}` : 'Ainda a imprimir'}</span></div>
+      <div class="fin-steps">${f.it.steps.map(t => `<label class="check"><input type="checkbox" data-act="step-tog" data-o="${o.id}" data-item="${f.it.id}" data-step="${esc(t.id)}" ${sd[t.id] ? 'checked' : ''}> ${esc(t.name)}${t.min ? ` <small class="muted">${t.min * (+f.it.qty || 1)} min</small>` : ''}</label>`).join('')}</div>
+      ${isArt(f.it) && (f.it.mats || []).length ? `<small class="muted">${f.complete ? 'Descontado do stock' : 'Ao concluir desconta do stock'}: ${esc(stockText(f.it.mats.map(m => ({...m, qty:r2(m.qty * f.it.qty)}))))}</small>` : ''}</div>`; }).join('')}</div>`;
+}
+// materiais dos artigos com a montagem concluída saem do stock (e voltam se desmarcar)
+async function asmApply(o){
+  const done = (o.items || []).filter(it => isArt(it) && (it.steps || []).length && it.steps.every(t => (it.stepsDone || {})[t.id]));
+  const su = done.flatMap(it => usesWithCost(it.mats, +it.qty || 1, o.asmUses));
+  await applyStock(o.asmUses, su); o.asmUses = su;
+}
+async function toggleStep(oid, itemId, stepId, on){
+  const cur = orderForm.current && $('#dlg').open && $('#o-closed') ? orderForm.current() : null;
+  const o = cur && cur.id === oid ? cur : cp(S.orders.find(x => x.id === oid) || {});
+  const it = (o.items || []).find(x => x.id === itemId); if (!it) return;
+  it.stepsDone = {...(it.stepsDone || {}), [stepId]:on}; if (!on) delete it.stepsDone[stepId];
+  if (cur && cur.id === oid){ await orderForm.save(); orderForm(S.orders.find(x => x.id === oid) || o); }
+  else { await asmApply(o); await put('orders', o); }
+  const st = orderState(o);
+  if (st.status === 'pronta' && on) toast(`Encomenda ${o.number} pronta.`);
+}
 function orderForm(o){
   o = cp(o); const stt = orderState(o);
   const jobs = S.jobs.filter(j => j.orderId === o.id).sort((a, b) => (b.date || '').localeCompare(a.date || ''));
@@ -879,6 +959,7 @@ function orderForm(o){
     <div class="tbl-wrap"><table><thead><tr><th></th><th>Peça</th><th class="r">Qtd.</th><th class="r">Feitas</th><th class="r">Planeadas</th><th class="r">Por planear</th><th style="width:120px">Progresso</th></tr></thead><tbody>
       ${stt.items.map(i => `<tr><td style="width:48px">${thumbImg(i.thumb, 36)}</td><td>${esc(i.desc)}${i.ref ? ` <small class="muted mono">${esc(i.ref)}</small>` : ''}<br><small class="muted">${filsOf(i).length > 1 ? filsOf(i).map(f => swatch(matHex(f.mat) || f.hex)).join('') + ' ' : ''}${esc(filsText(i))}</small></td><td class="r num">${i.qty}</td><td class="r num">${i.done}</td><td class="r num">${i.planned}</td><td class="r num">${i.toPlan ? `<b>${i.toPlan}</b>` : '0'}</td><td><div class="bar"><i class="${i.done >= i.qty ? '' : 'info'}" style="width:${Math.min(100, i.done / (i.qty || 1) * 100)}%"></i></div></td></tr>`).join('')}
     </tbody></table></div>
+    ${stt.fin.length ? `<h3>Acabamento e montagem</h3>${finHtml(o, stt)}` : ''}
     <div class="cols">${moneyPanel(o)}${resultPanel(o)}</div>
     <div class="field"><label>Embalagem e materiais da entrega</label>${stockEditor('o', o.packs || [])}<span class="hint">${(o.stockUses || []).length ? `Já descontado do stock na entrega: ${esc(stockText(o.stockUses))}.` : 'São descontados do stock quando a encomenda é marcada como entregue.'}</span></div>
     ${F('o-notes', 'Notas', `<textarea id="o-notes">${esc(o.notes)}</textarea>`)}
@@ -893,6 +974,7 @@ function orderForm(o){
     o.packs = readStock('o');
     const su = closed === 'entregue' ? usesWithCost(o.packs, 1, o.stockUses) : [];
     await applyStock(o.stockUses, su); o.stockUses = su;
+    await asmApply(o);
     await put('orders', o); return o;
   };
   orderForm.current = () => o;
@@ -1069,6 +1151,13 @@ function gantt(){
     ${lanes || '<div class="empty">Adicione impressoras para planear a produção.</div>'}
   </div></div>`;
 }
+function finPanel(){
+  const list = S.orders.map(o => ({o, s:orderState(o)})).filter(({s}) => s.open && s.fin.some(f => !f.complete && (f.printed || f.nDone)));
+  if (!list.length) return '';
+  return `<section class="panel"><div class="panel-h"><div><h2>Acabamento e montagem</h2><small class="muted">Linhas já impressas (ou começadas) com passos por fazer. Assinale cada passo quando estiver feito.</small></div></div>
+    ${list.map(({o, s}) => `<div class="fin-order"><div class="fin-oh"><button type="button" class="linkbtn mono" data-act="edit-order" data-id="${o.id}"><b>${esc(o.number)}</b></button> ${esc(clientName(o) || 'Sem cliente')} <small class="muted">· prazo ${fmtDate(o.due)}</small></div>${finHtml(o, {fin:s.fin.filter(f => !f.complete && (f.printed || f.nDone))})}</div>`).join('')}
+  </section>`;
+}
 function filQueuePanel(){
   const {sp, mat} = reservations();
   const rows = Object.entries(sp).map(([id, g]) => { const s = S.spools.find(x => x.id === id); return {s, g, have:spoolRemain(s)}; }).sort((a, b) => (b.g - b.have) - (a.g - a.have));
@@ -1104,6 +1193,7 @@ function vProduction(){
     <section class="panel"><div class="panel-h"><h2>Encomendas por planear</h2></div>
       ${pend.length ? `<ul class="alerts">${pend.map(({o, s}) => `<li><span class="pill ${s.late ? 'bad' : 'warn'}">${s.late ? 'Atrasada' : s.toPlan + ' un.'}</span><div class="txt">${esc(o.number)} · ${esc(clientName(o) || 'sem cliente')}<small>Prazo ${fmtDate(o.due)} · ${s.items.filter(i => i.toPlan).map(i => `${i.toPlan}× ${i.desc}`).join(', ')}</small></div><button class="btn sm primary" data-act="plan-order" data-id="${o.id}">Planear</button></li>`).join('')}</ul>` : '<div class="empty">Todas as encomendas em curso estão planeadas.</div>'}
     </section>
+    ${finPanel()}
     ${filQueuePanel()}
     <div class="panel-h"><h2>Cronograma</h2><div class="chips">${chip(1, 'Hoje')}${chip(3, '3 dias')}${chip(7, '7 dias')}</div></div>
     ${gantt()}
@@ -1786,7 +1876,7 @@ function orderLabelsPdf(jsPDF, qrcode, orders, mode, vols){
         page(); let y = head(o, `Peça ${i + 1} de ${items.length}`);
         font(8, 'bold', acc); T('PEÇA', M, y + 2);
         const z = fit(it.desc || 'Peça', W - 2 * M, 22); const ls = doc.splitTextToSize(pdfT(it.desc || 'Peça'), W - 2 * M).slice(0, 2); ls.forEach((l, k) => doc.text(l, M, y + 11 + k * z * .42)); y += 11 + ls.length * z * .42;
-        const ms = [...new Set(filsOf(it).map(f => clientMat(f.mat)).filter(Boolean))].join(', ');
+        const ms = isArt(it) ? compsText(it) : [...new Set(filsOf(it).map(f => clientMat(f.mat)).filter(Boolean))].join(', ');
         font(10, 'normal', grey); T([it.ref ? 'Ref. ' + it.ref : '', ms].filter(Boolean).join('  ·  '), M, y); y += 6;
         const bh = H - 13 - 34 - y;
         if (it.thumb && bh > 30){ doc.setDrawColor(225); doc.roundedRect(M, y, W - 2 * M, bh, 2, 2, 'S'); img(it.thumb, M + 3, y + 3, W - 2 * M - 6, bh - 6); y += bh + 4; } else y += 6;
@@ -1806,8 +1896,9 @@ function orderLabelsPdf(jsPDF, qrcode, orders, mode, vols){
         const yy = y + i * rh; doc.setDrawColor(225); doc.setLineWidth(.25); doc.line(M, yy + rh, W - M, yy + rh);
         doc.setDrawColor(...grey); doc.setLineWidth(.35); doc.rect(M, yy + rh / 2 - 2.5, 5, 5);
         let x = M + 8; if (th && it.thumb && img(it.thumb, x, yy + 1.5, rh - 3, rh - 3)) x += rh;
-        font(rh >= 15 ? 11.5 : 10, 'bold'); T(doc.splitTextToSize(pdfT(it.desc || 'Peça'), W - M - 32 - x)[0], x, yy + rh / 2 + (it.ref ? -.5 : 1.5));
-        if (it.ref){ font(8, 'normal', grey); T('Ref. ' + it.ref, x, yy + rh / 2 + 4); }
+        font(rh >= 15 ? 11.5 : 10, 'bold'); T(doc.splitTextToSize(pdfT(it.desc || 'Peça'), W - M - 32 - x)[0], x, yy + rh / 2 + (it.ref || isArt(it) ? -.5 : 1.5));
+        const sub = [it.ref ? 'Ref. ' + it.ref : '', isArt(it) ? compsText(it) : ''].filter(Boolean).join('  ·  ');
+        if (sub){ font(8, 'normal', grey); T(doc.splitTextToSize(pdfT(sub), W - M - 32 - x)[0], x, yy + rh / 2 + 4); }
         font(rh >= 15 ? 16 : 12, 'bold'); T(`× ${it.qty}`, W - M - 2, yy + rh / 2 + 2, {align:'right'});
       });
       if (shown.length < n){ font(9, 'bold', [176, 42, 42]); T(`+ ${n - shown.length} peças (ver a encomenda)`, M, y + shown.length * rh + 6); }
@@ -2002,7 +2093,7 @@ function jobForm(j, prefill){
 // materiais do stock gastos numa impressão bem-sucedida (da peça da encomenda ou do catálogo)
 function jobStock(j, prev){
   if (j.result !== 'sucesso') return [];
-  const ord = j.orderId && S.orders.find(o => o.id === j.orderId), it = ord && (ord.items || []).find(i => i.id === j.itemId);
+  const ord = j.orderId && S.orders.find(o => o.id === j.orderId), it = ord && prodUnits(ord).find(i => i.id === j.itemId);
   const src = it && it.mats ? it : S.parts.find(x => x.id === j.partId);
   return src ? usesWithCost(src.mats, Math.max(1, +j.qty || 1), prev) : [];
 }
@@ -2266,7 +2357,7 @@ function clientForm(c, after){
 /* ---------- peças ---------- */
 function partPrice(p){
   const s = settings();
-  return calcQuote({printerId:(S.printers[0] || {}).id, failure:s.failure, margin:s.margin, laborRate:s.labor, items:[{...p, qty:1, disc:0}]}).net;
+  return calcQuote({printerId:(S.printers[0] || {}).id, failure:s.failure, margin:s.margin, laborRate:s.labor, items:[{...(isArt(p) ? expandArt(p) : p), qty:1, disc:0}]}).net;
 }
 function partForm(p, opts = {}){
   const isNew = !p, s = settings();
@@ -2280,6 +2371,7 @@ function partForm(p, opts = {}){
     <div class="row">${hmInputs('pt', p.hours)}${F('pt-labor', 'Mão de obra por unidade (min)', inp('pt-labor', Math.round((p.laborH || 0) * 60), 'number', 'min="0" step="1"'))}</div>
     <div class="purge-box" id="pt-purge-w"><div class="row">${F('pt-chg', 'Trocas de cor por unidade', inp('pt-chg', p.changes || 0, 'number', 'min="0" step="1"'))}${F('pt-pg', 'Purga por troca (g)', inp('pt-pg', p.purgeG ?? s.purgeG, 'number', 'min="0" step="0.1"'))}<div class="field"><label>Desperdício por unidade</label><div class="pay-ent" id="pt-purge"></div></div></div>
       <span class="hint">Filamento deitado fora em cada troca de cor (purga e torre). Se os gramas vieram do G-code do slicer, a purga já está incluída: deixe 0 trocas.</span></div>
+    <div class="field"><label>Passos de acabamento (opcional)</label>${stepsEditor('pt', p.steps)}<span class="hint">Ex.: remover suportes, lixar, pintar. O tempo entra no custo da mão de obra e os passos são assinalados na encomenda.</span></div>
     <div class="field"><label>Materiais do stock por unidade</label>${stockEditor('pt', p.mats)}<span class="hint">Ex.: ímanes, parafusos, insertos. Entram no custo do orçamento e são descontados do stock quando regista a impressão.</span></div>
     ${F('pt-notes', 'Notas', `<textarea id="pt-notes" placeholder="ex.: Imprimir deitada, com suportes">${esc(p.notes)}</textarea>`)}
     <p class="muted" style="margin:0">Preço de referência por unidade (margens das Definições, sem IVA): <b class="num" id="pt-price"></b></p>`,
@@ -2290,7 +2382,7 @@ function partForm(p, opts = {}){
     await put('parts', n); closeDlg(); toast(isNew ? 'Peça criada.' : 'Peça atualizada.');
     if (opts.after) opts.after(n);
   }});
-  function readPart(){ return withFils({...p, name:val('pt-name').trim(), ref:val('pt-ref').trim(), clientId:val('pt-client'), hours:readHM('pt'), laborH:r2(numv('pt-labor') / 60), changes:Math.max(0, Math.round(numv('pt-chg'))), purgeG:r2(numv('pt-pg')), mats:readStock('pt'), notes:val('pt-notes').trim()}, readFils('pt').filter(f => f.mat)); }
+  function readPart(){ return withFils({...p, name:val('pt-name').trim(), ref:val('pt-ref').trim(), clientId:val('pt-client'), hours:readHM('pt'), laborH:r2(numv('pt-labor') / 60), changes:Math.max(0, Math.round(numv('pt-chg'))), purgeG:r2(numv('pt-pg')), mats:readStock('pt'), steps:readSteps('pt'), notes:val('pt-notes').trim()}, readFils('pt').filter(f => f.mat)); }
   onGcode = r => {
     if (!val('pt-name').trim() || $('#pt-name').dataset.fromGcode){ $('#pt-name').value = r.name; $('#pt-name').dataset.fromGcode = '1'; }
     if (r.fils && r.fils.length) setFils('pt', gcodeFils(r, 'mat'));
@@ -2298,6 +2390,51 @@ function partForm(p, opts = {}){
     p.src = {file:r.file, slicer:r.slicer, type:r.type, layer:r.layer, nozzle:r.nozzle, estimated:r.estimated}; p.thumb = r.thumb || '';
     const box = $('#pt-src'); box.innerHTML = srcBox(); box.hidden = false;
   };
+}
+function artigoForm(p, opts = {}){
+  const isNew = !p, s = settings();
+  p = p ? cp(p) : {id:uid(), kind:'artigo', name:'', ref:'', clientId:opts.clientId || '', comps:[], mats:[], steps:[], costs:[], fixedPrice:null, notes:'', thumb:''};
+  const pieces = S.parts.filter(x => !isArt(x)).sort((a, b) => a.name.localeCompare(b.name, 'pt'));
+  const compRow = (c = {}) => { const r = c.id || uid(); return `<div class="srow comp-row" data-r="${r}">${F(`ar-cp-${r}`, 'Peça impressa', sel(`ar-cp-${r}`, [['', '— Peça do catálogo —']].concat(pieces.map(x => [x.id, `${x.name}${x.ref ? ' · ' + x.ref : ''} (${num(sumG(filsOf(x)), 1)} g · ${hm(x.hours)})`])), c.partId || ''))}${F(`ar-cq-${r}`, 'Qtd. por artigo', inp(`ar-cq-${r}`, c.qty ?? 1, 'number', 'min="1" step="1"'))}<button type="button" class="btn ghost" data-act="rm-srow" aria-label="Remover peça">✕</button></div>`; };
+  const costRow = (c = {}) => { const r = uid(); return `<div class="srow cost-row" data-r="${r}">${F(`ar-kd-${r}`, 'Descrição', inp(`ar-kd-${r}`, c.desc || '', 'text', 'placeholder="ex.: Abajur de tecido"'))}${F(`ar-ke-${r}`, 'Valor (€)', inp(`ar-ke-${r}`, c.eur ?? 0, 'number', 'min="0" step="0.01"'))}<button type="button" class="btn ghost" data-act="rm-srow" aria-label="Remover custo">✕</button></div>`; };
+  artigoForm.compRow = compRow; artigoForm.costRow = costRow;
+  const fixed = p.fixedPrice != null && p.fixedPrice !== '';
+  openDlg(isNew ? 'Novo artigo composto' : 'Editar artigo', `
+    <p class="muted" style="margin:0">Um artigo junta peças impressas do catálogo, materiais do stock (colas, tintas, iluminação…) e passos de acabamento ou montagem. Ao cliente aparece só o artigo.</p>
+    <div class="row">${F('ar-name', 'Nome do artigo', inp('ar-name', p.name, 'text', 'placeholder="ex.: Candeeiro de mesa"'))}${F('ar-ref', 'Referência', inp('ar-ref', p.ref, 'text', 'placeholder="opcional"'))}${F('ar-client', 'Cliente', sel('ar-client', clientOpts([['', 'Geral (todos os clientes)']]), p.clientId))}</div>
+    <div class="field"><label>Peças impressas por artigo</label><div class="items" id="ar-comps">${(p.comps || []).map(compRow).join('')}</div><div class="srow-add">${pieces.length ? '<button type="button" class="btn sm" data-act="add-comp">Adicionar peça</button>' : '<span class="muted">Crie primeiro as peças no catálogo (Nova peça ou Importar G-code).</span>'}</div></div>
+    <div class="field"><label>Materiais e consumíveis do stock por artigo</label>${stockEditor('ar', p.mats)}<span class="hint">Colas, tintas, iluminação, parafusos… na unidade do stock (ml, g, un.). Saem do stock quando a montagem fica concluída.</span></div>
+    <div class="field"><label>Passos de acabamento e montagem</label>${stepsEditor('ar', p.steps)}<span class="hint">Cada passo é assinalado na encomenda e o tempo entra no custo. Sem passos, a encomenda pede só "Montagem".</span></div>
+    <div class="field"><label>Outros custos por artigo</label><div class="items" id="ar-costs">${(p.costs || []).map(costRow).join('')}</div><div class="srow-add"><button type="button" class="btn sm" data-act="add-cost">Adicionar custo</button></div><span class="hint">O que não controla em stock, ex.: uma peça comprada de propósito.</span></div>
+    <div class="row"><div class="field"><label for="ar-pmode">Preço de venda</label>${sel('ar-pmode', [['calc', 'Calculado (custo + margem)'], ['fixed', 'Preço fixo']], fixed ? 'fixed' : 'calc')}</div><div class="field" id="ar-fixed-w"><label for="ar-fixed">Preço fixo por artigo (€, sem IVA)</label>${inp('ar-fixed', fixed ? p.fixedPrice : '', 'number', 'min="0" step="0.01"')}</div></div>
+    <div class="sum art-sum" id="ar-sum"></div>
+    ${F('ar-notes', 'Notas', `<textarea id="ar-notes" placeholder="ex.: Colar a base antes de pintar">${esc(p.notes || '')}</textarea>`)}`,
+  {wide:true, input: () => {
+    $('#ar-fixed-w').hidden = val('ar-pmode') !== 'fixed';
+    const n = read(), e = expandArt(n), t = artTotals(e), L = (l, v, cls = '') => `<div class="l ${cls}"><span>${l}</span><span>${v}</span></div>`;
+    const c = calcQuote({printerId:(S.printers[0] || {}).id, failure:s.failure, margin:s.margin, laborRate:s.labor, items:[{...e, qty:1, disc:0}]}), l = c.lines[0];
+    const print = l.material + l.purge + l.energy + l.machine + l.failure + e.comps.reduce((a, x) => a + stockCostOf(x.mats) * x.qty, 0);
+    const smin = stepsMin(e) + e.comps.reduce((a, x) => a + (stepsMin(x) + (+x.laborH || 0) * 60) * x.qty, 0);
+    $('#ar-sum').innerHTML = `<div class="eyebrow">Por artigo (margens das Definições, sem IVA)</div>
+      ${L(`Peças impressas (${e.comps.reduce((a, x) => a + x.qty, 0)} · ${num(t.g, 1)} g · ${hm(t.h)})`, eur(print))}${L('Materiais do stock', eur(stockCostOf(e.mats)))}${L(`Mão de obra (${smin} min)`, eur(l.labor))}${costsOf(e) ? L('Outros custos', eur(costsOf(e))) : ''}
+      ${L('<b>Custo</b>', `<b>${eur(l.unitCost)}</b>`, 'tot')}${L(hasFixed(e) ? 'Preço fixo' : `Preço (margem ${num(s.margin)}%)`, `<b>${eur(l.unitPrice)}</b>`)}${L('Lucro por artigo', `${eur(l.unitPrice - l.unitCost)}${l.unitPrice > 0 ? ` (${num((l.unitPrice - l.unitCost) / l.unitPrice * 100, 1)}% do preço)` : ''}`, l.unitPrice < l.unitCost ? 'neg' : '')}`;
+  },
+  handler: async () => {
+    const n = read();
+    if (!n.name){ toast('Indique o nome do artigo.'); return; }
+    if (!n.comps.length && !n.mats.length){ toast('Junte pelo menos uma peça impressa ou um material.'); return; }
+    if (n.comps.some(c => c.partId === n.id)){ toast('Um artigo não pode conter-se a si próprio.'); return; }
+    const first = n.comps.map(c => S.parts.find(x => x.id === c.partId)).find(x => x && x.thumb); n.thumb = first ? first.thumb : '';
+    await put('parts', n); closeDlg(); toast(isNew ? 'Artigo criado.' : 'Artigo atualizado.');
+    if (opts.after) opts.after(n);
+  }});
+  function read(){
+    return {...p, kind:'artigo', name:val('ar-name').trim(), ref:val('ar-ref').trim(), clientId:val('ar-client'),
+      comps:[...document.querySelectorAll('#ar-comps .comp-row')].map(r => ({id:r.dataset.r, partId:val('ar-cp-' + r.dataset.r), qty:Math.max(1, Math.round(numv('ar-cq-' + r.dataset.r)))})).filter(c => c.partId),
+      mats:readStock('ar'), steps:readSteps('ar'),
+      costs:[...document.querySelectorAll('#ar-costs .cost-row')].map(r => ({desc:val('ar-kd-' + r.dataset.r).trim(), eur:r2(numv('ar-ke-' + r.dataset.r))})).filter(c => c.desc || c.eur),
+      fixedPrice:val('ar-pmode') === 'fixed' && val('ar-fixed') !== '' ? r2(numv('ar-fixed')) : null, notes:val('ar-notes').trim()};
+  }
 }
 function partFromGcode(r, clientId){
   return withFils({id:uid(), name:r.name, ref:'', clientId:clientId || '', hours:r.hours, laborH:0, notes:'',
@@ -2324,10 +2461,18 @@ function quoteForm(q, opts = {}){
   const ensureOpt = code => { if (code && !mo.some(o => o[0] === code)) mo.push([code, matLabel(code)]); };
   (q.items || []).forEach(it => filsOf(it).forEach(f => ensureOpt(f.mat)));
   const gramsSig = x => filsOf(x).map(f => r2(f.grams)).join('|');
-  const isStale = it => { const p = it.partId && S.parts.find(x => x.id === it.partId); return p && (p.name !== it.desc || gramsSig(p) !== gramsSig(it) || +p.hours !== +it.hours || +(p.laborH || 0) !== +(it.laborH || 0) || +(p.changes || 0) !== +(it.changes || 0) || JSON.stringify(p.mats || []) !== JSON.stringify(it.mats || [])); };
+  const artSig = x => JSON.stringify([x.desc, (x.comps || []).map(c => [c.partId, c.qty, gramsSig(c), +c.hours, +(c.laborH || 0), c.mats || [], c.steps || []]), x.mats || [], x.steps || [], x.costs || [], x.fixedPrice ?? null]);
+  const isStale = it => { const p = it.partId && S.parts.find(x => x.id === it.partId); if (p && isArt(it)) return artSig(expandArt(p)) !== artSig(it); return p && (p.name !== it.desc || gramsSig(p) !== gramsSig(it) || +p.hours !== +it.hours || +(p.laborH || 0) !== +(it.laborH || 0) || +(p.changes || 0) !== +(it.changes || 0) || JSON.stringify(p.mats || []) !== JSON.stringify(it.mats || [])); };
   const optsHtml = (v) => mo.map(([k, l]) => `<option value="${esc(k)}" ${k === v ? 'selected' : ''}>${esc(l)}</option>`).join('');
   const itemFils = it => { const fl = filsOf(it); return `<div class="field qi-mat${fl.length > 1 ? ' multi' : ''}"><label>${fl.length > 1 ? `Filamentos (${fl.length})` : 'Filamento'}</label><div class="qi-fils">${fl.map((f, k) => `<div class="qf">${swatch(matHex(f.mat) || f.hex)}<select id="i-m-${it.id}-${k}" aria-label="Filamento ${k + 1}">${optsHtml(f.mat)}</select>${fl.length > 1 ? `<span class="num muted">${num(f.grams, 1)} g</span>` : ''}</div>`).join('')}</div></div>`; };
-  const itemRow = it => `<div class="qitem" data-id="${it.id}">
+  const artRow = it => { const t = artTotals(it), sm = stepsMin(it) + (it.comps || []).reduce((a, c) => a + stepsMin(c) * c.qty, 0); return `<div class="qitem art" data-id="${it.id}">
+    <div class="qi-name">${thumbImg(it.thumb)}<div><b>${esc(it.desc || 'Artigo')}</b> <span class="pill info">Artigo</span>${it.ref ? ` <span class="muted mono">${esc(it.ref)}</span>` : ''}<small>${esc(compsText(it))} · ${num(t.g, 1)} g · ${hm(t.h)} de impressão${sm ? ` · ${sm} min de acabamento` : ''}${(it.mats || []).length ? ' · ' + esc(stockText(it.mats)) : ''} por artigo${hasFixed(it) ? ' · preço fixo' : ''}</small>${isStale(it) ? `<button type="button" class="linkbtn" data-act="refresh-item">O artigo foi alterado no catálogo. Atualizar</button>` : ''}</div></div>
+    <div class="field qi-mat"></div>
+    ${F('i-q-' + it.id, 'Qtd.', inp('i-q-' + it.id, it.qty || 1, 'number', 'min="1" step="1"'))}
+    ${F('i-x-' + it.id, 'Desc. %', inp('i-x-' + it.id, it.disc || 0, 'number', 'min="0" max="100" step="0.5"'))}
+    <div class="qi-price"><span class="u"></span><b class="t"></b></div>
+    <button type="button" class="btn ghost" data-act="rm-row" aria-label="Remover artigo">✕</button></div>`; };
+  const itemRow = it => isArt(it) ? artRow(it) : `<div class="qitem" data-id="${it.id}">
     <div class="qi-name">${thumbImg(it.thumb)}<div><b>${esc(it.desc || 'Peça')}</b>${it.ref ? ` <span class="muted mono">${esc(it.ref)}</span>` : ''}<small>${num(it.grams, 1)} g · ${hm(it.hours)}${it.laborH ? ` · ${num(it.laborH * 60)} min mão de obra` : ''} por unidade${purgeOf(it) ? ` · purga ${num(purgeOf(it), 1)} g` : ''}${(it.mats || []).length ? ' · ' + esc(stockText(it.mats)) : ''}${it.partId ? '' : ' · sem ficha no catálogo'}</small>${isStale(it) ? `<button type="button" class="linkbtn" data-act="refresh-item">A peça foi alterada no catálogo. Atualizar</button>` : ''}</div></div>
     ${itemFils(it)}
     ${F('i-q-' + it.id, 'Qtd.', inp('i-q-' + it.id, it.qty || 1, 'number', 'min="1" step="1"'))}
@@ -2336,18 +2481,18 @@ function quoteForm(q, opts = {}){
     <button type="button" class="btn ghost" data-act="rm-row" aria-label="Remover peça">✕</button></div>`;
   // filamentos da peça; os genéricos passam para a bobine mais parecida (material e cor) com stock
   const partFils = (p, qty) => filsOf(p).map(f => { if (f.mat && f.mat.startsWith('m:')){ const sp = bestSpool(f.mat.slice(2), f.hex, f.grams * qty); if (sp) return {mat:'s:' + sp.id, grams:f.grams, hex:f.hex}; } return {mat:f.mat, grams:f.grams, hex:f.hex}; });
-  const itemFromPart = (p, qty = 1) => withFils({id:uid(), partId:p.id, desc:p.name, ref:p.ref || '', hours:+p.hours || 0, laborH:+p.laborH || 0, changes:+p.changes || 0, purgeG:p.purgeG ?? null, mats:cp(p.mats || []), thumb:p.thumb || '', qty, disc:0}, partFils(p, qty));
+  const itemFromPart = (p, qty = 1) => isArt(p) ? {...expandArt(p, partFils, qty), id:uid(), qty, disc:0} : withFils({id:uid(), partId:p.id, desc:p.name, ref:p.ref || '', hours:+p.hours || 0, laborH:+p.laborH || 0, changes:+p.changes || 0, purgeG:p.purgeG ?? null, mats:cp(p.mats || []), thumb:p.thumb || '', qty, disc:0}, partFils(p, qty));
   const addItem = it => { filsOf(it).forEach(f => ensureOpt(f.mat)); snap[it.id] = it; const w = document.createElement('div'); w.innerHTML = itemRow(it); $('#q-items').append(w.firstElementChild); $('#q-empty').hidden = true; };
   quoteForm.addPart = (pid, qty) => { const p = S.parts.find(x => x.id === pid); if (p){ addItem(itemFromPart(p, qty)); onInput && onInput(); } };
   quoteForm.refreshItem = id => {
     const old = snap[id], p = old && S.parts.find(x => x.id === old.partId); if (!p) return;
     const qty = numv('i-q-' + id) || 1;
-    const n = withFils({...old, desc:p.name, ref:p.ref || '', hours:+p.hours || 0, laborH:+p.laborH || 0, changes:+p.changes || 0, purgeG:p.purgeG ?? null, mats:cp(p.mats || []), thumb:p.thumb || '', qty, disc:numv('i-x-' + id)}, partFils(p, qty));
+    const n = isArt(p) ? {...itemFromPart(p, qty), id, disc:numv('i-x-' + id)} : withFils({...old, desc:p.name, ref:p.ref || '', hours:+p.hours || 0, laborH:+p.laborH || 0, changes:+p.changes || 0, purgeG:p.purgeG ?? null, mats:cp(p.mats || []), thumb:p.thumb || '', qty, disc:numv('i-x-' + id)}, partFils(p, qty));
     filsOf(n).forEach(f => ensureOpt(f.mat)); snap[id] = n; const row = document.querySelector(`.qitem[data-id="${id}"]`); const w = document.createElement('div'); w.innerHTML = itemRow(n); row.replaceWith(w.firstElementChild); onInput && onInput();
   };
   const partOpts = cid => {
     const mine = S.parts.filter(p => cid && p.clientId === cid), gen = S.parts.filter(p => !p.clientId), other = S.parts.filter(p => p.clientId && p.clientId !== cid);
-    const o = list => list.sort((a, b) => a.name.localeCompare(b.name, 'pt')).map(p => `<option value="${p.id}">${esc(p.name)}${p.ref ? ' · ' + esc(p.ref) : ''} — ${filsOf(p).length > 1 ? filsOf(p).length + ' filamentos · ' : ''}${num(sumG(filsOf(p)), 1)} g · ${hm(p.hours)}</option>`).join('');
+    const o = list => list.sort((a, b) => a.name.localeCompare(b.name, 'pt')).map(p => isArt(p) ? `<option value="${p.id}">${esc(p.name)}${p.ref ? ' · ' + esc(p.ref) : ''} — artigo · ${(p.comps || []).reduce((a, c) => a + (+c.qty || 0), 0)} peças</option>` : `<option value="${p.id}">${esc(p.name)}${p.ref ? ' · ' + esc(p.ref) : ''} — ${filsOf(p).length > 1 ? filsOf(p).length + ' filamentos · ' : ''}${num(sumG(filsOf(p)), 1)} g · ${hm(p.hours)}</option>`).join('');
     return `<option value="">Escolher peça do catálogo…</option>${mine.length ? `<optgroup label="Deste cliente">${o(mine)}</optgroup>` : ''}${gen.length ? `<optgroup label="Gerais">${o(gen)}</optgroup>` : ''}${other.length ? `<optgroup label="De outros clientes">${o(other)}</optgroup>` : ''}`;
   };
   quoteForm.partOpts = partOpts;
@@ -2355,7 +2500,7 @@ function quoteForm(q, opts = {}){
     const cid = val('q-client');
     return {...q, number:val('q-number').trim(), clientId:cid === '__new' || cid === '__legacy' ? '' : cid, client:cid === '__new' ? val('qc-name').trim() : cid === '__legacy' ? q.client : clientName({clientId:cid}), date:val('q-date'), validity:numv('q-validity'), deliveryDays:Math.round(numv('q-delivery')), payAdj:Math.min(100, Math.max(0, numv('q-adj'))), status:val('q-status'), printerId:val('q-printer'),
       laborRate:numv('q-rate'), laborH:numv('q-labor'), extras:numv('q-extras'), failure:numv('q-failure'), margin:numv('q-margin'), vat:$('#q-vat').checked, notes:val('q-notes').trim(),
-      items:[...document.querySelectorAll('#q-items .qitem')].map(r => { const id = r.dataset.id; const fl = filsOf(snap[id]).map((f, k) => { const m = val(`i-m-${id}-${k}`) || f.mat; return {mat:m, grams:f.grams, hex:f.hex}; }); return withFils({...snap[id], id, qty:Math.max(1, Math.round(numv('i-q-' + id))), disc:Math.min(100, Math.max(0, numv('i-x-' + id)))}, fl); })};
+      items:[...document.querySelectorAll('#q-items .qitem')].map(r => { const id = r.dataset.id; if (isArt(snap[id])) return {...snap[id], id, qty:Math.max(1, Math.round(numv('i-q-' + id))), disc:Math.min(100, Math.max(0, numv('i-x-' + id)))}; const fl = filsOf(snap[id]).map((f, k) => { const m = val(`i-m-${id}-${k}`) || f.mat; return {mat:m, grams:f.grams, hex:f.hex}; }); return withFils({...snap[id], id, qty:Math.max(1, Math.round(numv('i-q-' + id))), disc:Math.min(100, Math.max(0, numv('i-x-' + id)))}, fl); })};
   };
   quoteForm.read = read;
   quoteForm.save = () => onSubmit && onSubmit();
@@ -2386,7 +2531,7 @@ function quoteForm(q, opts = {}){
     const n = read(), c = calcQuote(n), L = (l, v, cls = '') => `<div class="l ${cls}"><span>${l}</span><span>${v}</span></div>`;
     [...document.querySelectorAll('#q-items .qitem')].forEach((r, i) => { const l = c.lines[i]; if (!l) return; r.querySelector('.u').textContent = `${eur(l.unitPrice)} /un.`; r.querySelector('.t').textContent = eur(l.net); r.querySelector('.t').title = l.disc ? `Antes do desconto: ${eur(l.gross)}` : ''; });
     $('#q-empty').hidden = n.items.length > 0;
-    $('#q-sum').innerHTML = `<div class="eyebrow">Cálculo</div>${L('Filamento', eur(c.material))}${c.purge ? L(`Purga de cor (${num(c.purgeG)} g)`, eur(c.purge)) : ''}${c.stockMat ? L('Materiais do stock', eur(c.stockMat)) : ''}${L(`${num(c.grams)} g · ${hm(c.hours)} de máquina`, '', 'sub')}${L('Energia', eur(c.energy))}${L('Desgaste da máquina', eur(c.machine))}${L(`Mão de obra (${eur(c.rate)}/h)`, eur(c.labor))}${L('Margem p/ falhas', eur(c.failure))}${L('Extras', eur(c.extras))}<hr>${L('Custo total', eur(c.cost))}${L('Preço antes de descontos', eur(c.gross))}${c.discount ? L('Descontos', '−' + eur(c.discount), 'disc') : ''}${L('Valor sem IVA', eur(c.net))}${L('Lucro', eur(c.profit), c.profit < 0 ? 'neg' : 'sub')}${L(`IVA (${num(s.vat)}%)`, eur(c.vat))}<hr>${L('Total', eur(c.total), 'total')}${(() => { const ps = paySplit(n, c.total); return `<hr>${ps.pAdj > 0 ? L(`Na adjudicação (${pctTxt(ps.pAdj)})`, eur(ps.adj)) : ''}${ps.pEnt > 0 ? L(`Na entrega (${pctTxt(ps.pEnt)})`, eur(ps.ent)) : ''}`; })()}`;
+    $('#q-sum').innerHTML = `<div class="eyebrow">Cálculo</div>${L('Filamento', eur(c.material))}${c.purge ? L(`Purga de cor (${num(c.purgeG)} g)`, eur(c.purge)) : ''}${c.stockMat ? L('Materiais do stock', eur(c.stockMat)) : ''}${c.other ? L('Outros custos dos artigos', eur(c.other)) : ''}${L(`${num(c.grams)} g · ${hm(c.hours)} de máquina`, '', 'sub')}${L('Energia', eur(c.energy))}${L('Desgaste da máquina', eur(c.machine))}${L(`Mão de obra (${eur(c.rate)}/h)`, eur(c.labor))}${L('Margem p/ falhas', eur(c.failure))}${L('Extras', eur(c.extras))}<hr>${L('Custo total', eur(c.cost))}${L('Preço antes de descontos', eur(c.gross))}${c.discount ? L('Descontos', '−' + eur(c.discount), 'disc') : ''}${L('Valor sem IVA', eur(c.net))}${L('Lucro', eur(c.profit), c.profit < 0 ? 'neg' : 'sub')}${L(`IVA (${num(s.vat)}%)`, eur(c.vat))}<hr>${L('Total', eur(c.total), 'total')}${(() => { const ps = paySplit(n, c.total); return `<hr>${ps.pAdj > 0 ? L(`Na adjudicação (${pctTxt(ps.pAdj)})`, eur(ps.adj)) : ''}${ps.pEnt > 0 ? L(`Na entrega (${pctTxt(ps.pEnt)})`, eur(ps.ent)) : ''}`; })()}`;
     { const ps = paySplit(n, c.total); $('#q-ent').textContent = `${pctTxt(ps.pEnt)} · ${eur(ps.ent)}`; document.querySelectorAll('[data-act="pay-preset"]').forEach(b => b.setAttribute('aria-pressed', String(+b.dataset.v === ps.pAdj))); }
    },
    handler: async () => {
@@ -2464,6 +2609,11 @@ document.addEventListener('click', async e => {
       case 'weigh': weighForm(find('spools')); break;
       case 'labels': labelsDlg(b.dataset.id); break;
       case 'olabels': orderLabelsDlg(b.dataset.id); break;
+      case 'step-tog': await toggleStep(b.dataset.o, b.dataset.item, b.dataset.step, b.checked); break;
+      case 'add-step': { const w = document.createElement('div'); w.innerHTML = stepsEditor.row(b.dataset.px, {name:b.dataset.name || '', min:10}); const r = w.firstElementChild; $('#' + b.dataset.px + '-steps').append(r); if (!b.dataset.name) r.querySelector('input').focus(); onInput && onInput(); break; }
+      case 'add-comp': { const w = document.createElement('div'); w.innerHTML = artigoForm.compRow(); $('#ar-comps').append(w.firstElementChild); onInput && onInput(); break; }
+      case 'add-cost': { const w = document.createElement('div'); w.innerHTML = artigoForm.costRow(); $('#ar-costs').append(w.firstElementChild); onInput && onInput(); break; }
+      case 'new-art': artigoForm(); break;
       case 'new-printer': printerForm(); break;
       case 'edit-printer': printerForm(find('printers')); break;
       case 'new-maint': maintForm(id); break;
@@ -2525,7 +2675,7 @@ document.addEventListener('click', async e => {
       case 'edit-client': clientForm(find('clients')); break;
       case 'quote-client': quoteForm(null, {clientId:id}); break;
       case 'new-part': partForm(); break;
-      case 'edit-part': partForm(find('parts')); break;
+      case 'edit-part': { const p = find('parts'); isArt(p) ? artigoForm(p) : partForm(p); break; }
       case 'import-parts': importPartsDlg(); break;
       case 'quote-part': { const p = find('parts'); quoteForm(null, {clientId:p.clientId || '', partIds:[p.id]}); break; }
       case 'rm-row': b.closest('.qitem, .item, .task-row').remove(); onInput && onInput(); break;
@@ -2567,6 +2717,7 @@ document.addEventListener('click', async e => {
       }
       case 'del': {
         const col = b.dataset.col, item = find(col);
+        if (col === 'parts' && item){ const used = S.parts.filter(a => isArt(a) && (a.comps || []).some(c => c.partId === id)); if (used.length){ toast(`Esta peça faz parte de: ${used.map(a => a.name).join(', ')}. Retire-a primeiro desses artigos.`); break; } }
         if (col === 'purchases' && item && item.applied){ toast('Esta compra já foi recebida. Anule primeiro a receção para retirar as bobines e o stock.'); break; }
         const labels = {spools:'esta bobine', printers:'esta impressora', maint:'este registo de manutenção', jobs:'esta impressão', quotes:'este orçamento', clients:'este cliente', parts:'esta peça do catálogo', orders:'esta encomenda', plan:'esta impressão planeada', purchases:'esta compra', stock:'este material do stock'};
         const extra = col === 'jobs' ? ' O filamento volta a ser somado à bobine e as horas são retiradas da impressora.' : col === 'clients' ? ' Os orçamentos e peças deste cliente mantêm-se, mas deixam de estar ligados à ficha.' : col === 'parts' ? ' Os orçamentos que já a incluem não mudam.' : col === 'orders' ? ' As impressões ainda por fazer são retiradas do planeamento; as já registadas mantêm-se.' : '';
