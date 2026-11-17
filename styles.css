@@ -412,3 +412,10 @@ a.btn.primary{color:#fff}
 .fin-order{display:flex;flex-direction:column;gap:8px;padding:10px 0;border-top:1px solid var(--line)}
 .fin-order:first-of-type{border-top:0}
 .fin-oh a{color:inherit;text-decoration:none}
+
+/* cópia semanal por email */
+.bm{border-top:1px solid var(--line);padding-top:14px;display:flex;flex-direction:column;gap:10px}
+.bm h3{margin:0;font-size:1rem}
+.bm-help{font-size:.88rem}
+.bm-help summary{cursor:pointer;color:var(--accent);font-weight:500}
+.bm-help ol{margin:8px 0;padding-left:20px;display:flex;flex-direction:column;gap:4px}

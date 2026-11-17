@@ -126,7 +126,60 @@ function backupPanel(){
     <p class="muted" style="margin:0">O plano gratuito do Supabase não guarda cópias dos seus dados. Descarregue uma cópia pelo menos uma vez por semana e guarde-a fora deste computador (OneDrive, Google Drive, pen USB).${b ? ` Última: ${fmtDate(b.date)}${b.by ? ' por ' + esc(b.by) : ''}, ${num(b.registos || 0)} registos.` : ''}</p>
     <div class="actions"><button type="button" class="btn primary" data-act="backup-export">Descarregar cópia agora</button>${owner ? '<label class="btn file-btn">Repor a partir de uma cópia…<input type="file" id="backup-file" accept=".json,application/json"></label>' : ''}</div>
     ${owner ? '' : '<p class="hint muted" style="margin:0">Só o dono da conta pode repor uma cópia.</p>'}
+    <div class="bm" id="bm-box">${bmHtml()}</div>
   </section>`;
+}
+/* ---------- cópia semanal por email (função backup-email no Supabase + Resend) ---------- */
+const WEEKDAYS = [[1, 'Segunda-feira'], [2, 'Terça-feira'], [3, 'Quarta-feira'], [4, 'Quinta-feira'], [5, 'Sexta-feira'], [6, 'Sábado'], [0, 'Domingo']];
+async function bmLoad(){
+  try{ const {data, error} = await sb.rpc('backup_mail_get', {ws:WS}); if (error) throw error; st.bm = data || null; }
+  catch(e){ st.bm = {loadError:true}; }
+  const box = $('#bm-box'); if (box) box.innerHTML = bmHtml();
+}
+function bmHtml(){
+  if (st.bm === undefined){ setTimeout(bmLoad, 0); st.bm = 'loading'; }
+  const b = st.bm, owner = ROLE === 'dono';
+  const head = '<h3>Cópia semanal por email</h3>';
+  if (b === 'loading') return head + '<p class="muted" style="margin:0">A carregar…</p>';
+  if (b && b.loadError) return head + '<p class="muted" style="margin:0">Não foi possível ler a configuração (sem ligação?).</p>';
+  const day = d => (WEEKDAYS.find(w => w[0] === d) || [])[1] || '';
+  const status = !b ? '<span class="pill warn">Desligada</span>' : !b.enabled ? '<span class="pill">Desligada</span>' : b.lastStatus === 'erro' ? '<span class="pill bad">Falhou</span>' : b.lastSentAt ? '<span class="pill ok">Ativa</span>' : '<span class="pill info">Ativa · ainda não enviou</span>';
+  const last = b && b.lastSentAt ? `Último envio: ${fmtDT(b.lastSentAt)} para ${esc(b.email)}.` : '';
+  const err = b && b.lastStatus === 'erro' && b.lastError ? `<p class="badbox" style="margin:0">Último erro: ${esc(b.lastError)}</p>` : '';
+  const info = b && b.enabled ? `${b.weekday === 0 || b.weekday === 6 ? 'Todos os' : 'Todas as'} ${day(b.weekday).toLowerCase().replace('-feira', 's-feiras').replace('sábado', 'sábados').replace('domingo', 'domingos')} de manhã, para <b>${esc(b.email)}</b>. ${last}` : last;
+  if (!owner) return `${head}<p style="margin:0">${status} ${info || 'Só o dono da conta pode configurar.'}</p>${err}`;
+  return `${head}<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">${status}<span class="muted">${info}</span></div>${err}
+    <p class="muted" style="margin:0">Uma vez por semana o servidor junta todos os dados num ficheiro (o mesmo da cópia acima, que se repõe aqui) e envia-o em anexo. Funciona mesmo com a aplicação fechada.</p>
+    <label class="check"><input type="checkbox" id="bm-on" ${!b || b.enabled ? 'checked' : ''}> Enviar a cópia todas as semanas</label>
+    <div class="row">${F('bm-email', 'Enviar para', inp('bm-email', b ? b.email : (ME && ME.email) || '', 'email'))}${F('bm-day', 'Dia da semana', sel('bm-day', WEEKDAYS, b ? b.weekday : 1))}
+      <div class="field"><label for="bm-key">Chave do Resend</label><input id="bm-key" type="password" autocomplete="off" placeholder="${b && b.hasKey ? 'Guardada · deixe vazio para manter' : 're_…'}"></div></div>
+    <details class="bm-help"><summary>Como obter a chave do Resend (grátis, 5 minutos)</summary><ol>
+      <li>Crie uma conta em <a href="https://resend.com/signup" target="_blank" rel="noopener">resend.com</a> <b>com o email onde quer receber a cópia</b> (no plano grátis só se pode enviar para esse email).</li>
+      <li>No Resend, abra <b>API Keys</b> → <b>Create API Key</b>, dê um nome (ex.: Viana3D) e escolha a permissão <b>Sending access</b>.</li>
+      <li>Copie a chave (começa por <span class="mono">re_</span>), cole-a acima e carregue em <b>Guardar</b>. Depois use <b>Enviar agora</b> para testar.</li></ol>
+      <p class="muted" style="margin:0">A chave fica guardada no servidor, numa área que a aplicação não consegue ler de volta.</p></details>
+    <div class="actions" style="justify-content:flex-start"><button type="button" class="btn primary" data-act="bm-save">Guardar</button>${b ? '<button type="button" class="btn" data-act="bm-test">Enviar agora</button>' : ''}</div>`;
+}
+async function bmSave(){
+  const email = val('bm-email').trim(), key = val('bm-key').trim();
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)){ toast('Indique um email válido.'); return false; }
+  if (!key && !(st.bm && st.bm.hasKey)){ toast('Cole a chave do Resend (veja "Como obter a chave").'); return false; }
+  if (key && !/^re_[A-Za-z0-9_]{10,}$/.test(key)){ toast('A chave do Resend começa por "re_". Verifique se a copiou toda.'); return false; }
+  const {error} = await sb.rpc('backup_mail_set', {ws:WS, p_enabled:$('#bm-on').checked, p_email:email, p_key:key || null, p_weekday:+val('bm-day')});
+  if (error){ toast('Não foi possível guardar: ' + error.message); return false; }
+  await bmLoad(); return true;
+}
+async function bmTest(){
+  if (val('bm-key').trim() && !(await bmSave())) return;
+  toast('A enviar a cópia…');
+  let msg = '';
+  try{
+    const {data, error} = await sb.functions.invoke('backup-email', {body:{workspace:WS}});
+    if (error){ try{ msg = (await error.context.json()).error; }catch(e){ msg = error.message; } }
+    else if (data && data.error) msg = data.error;
+  }catch(e){ msg = 'Sem ligação ao servidor.'; }
+  await bmLoad();
+  if (msg) toast('Não foi enviada: ' + msg); else toast('Cópia enviada. Veja o seu email (e a pasta de spam).');
 }
 async function importBackupFile(file){
   let data;
@@ -2647,6 +2700,8 @@ document.addEventListener('click', async e => {
       case 'compact': await compactQueue(id); break;
       case 'logout': await signOut(); break;
       case 'backup-export': await exportBackup(); break;
+      case 'bm-save': if (await bmSave()) toast('Cópia por email guardada.'); break;
+      case 'bm-test': await bmTest(); break;
       case 'team-invite': case 'team-uninvite': case 'team-rm': await teamAction(a, id); break;
       case 'new-purchase': purchaseForm(); break;
       case 'edit-purchase': purchaseForm(find('purchases')); break;

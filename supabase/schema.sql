@@ -195,3 +195,16 @@ revoke all on function public.quote_public(text) from public;
 revoke all on function public.quote_accept(text, text, text) from public;
 grant execute on function public.quote_public(text) to anon, authenticated;
 grant execute on function public.quote_accept(text, text, text) to anon, authenticated;
+
+-- ============================================================
+-- Cópia semanal por email (função Edge "backup-email" + Resend)
+-- Configurada pelo dono em Definições; a chave do Resend fica em
+-- private.backup_mail e nunca volta para a aplicação.
+-- O pg_cron chama a função todos os dias às 06:23 UTC com um
+-- segredo guardado no Vault; a função só envia no dia escolhido
+-- (ou se a última cópia tiver mais de 8 dias).
+-- ============================================================
+-- (ver a migração "backup_by_email": extensões pg_cron e pg_net, tabela
+--  private.backup_mail, funções backup_mail_get/set (app), backup_mail_targets,
+--  backup_mail_done e backup_cron_ok (só service_role), segredo
+--  'backup_cron_secret' no Vault e tarefa cron 'copia-semanal-email')
