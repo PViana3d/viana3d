@@ -483,7 +483,9 @@ function expandArt(p, compFils, qty = 1){
       compFils ? compFils(pp, (+c.qty || 1) * qty) : filsOf(pp)); }).filter(Boolean);
   return {kind:'artigo', partId:p.id, desc:p.name, ref:p.ref || '', thumb:p.thumb || '', comps, mats:cp(p.mats || []), steps:cp(p.steps || []), costs:cp(p.costs || []), fixedPrice:p.fixedPrice ?? null};
 }
-const hasFixed = it => isArt(it) && it.fixedPrice != null && it.fixedPrice !== '';
+// preço definido no catálogo: peça (price) ou artigo com preço fixo (fixedPrice); no orçamento só o desconto o altera
+const fixedOf = it => isArt(it) ? it.fixedPrice : it.price;
+const hasFixed = it => { const v = fixedOf(it); return v != null && v !== ''; };
 // totais por artigo (gramas e horas de impressão)
 const artTotals = it => (it.comps || []).reduce((a, c) => ({g:a.g + sumG(filsOf(c)) * (+c.qty || 0), h:a.h + (+c.hours || 0) * (+c.qty || 0)}), {g:0, h:0});
 function calcQuote(q){
@@ -511,7 +513,7 @@ function calcQuote(q){
   };
   const lines = (q.items || []).map(it => {
     const qty = Math.max(0, +it.qty || 0), u = unit(it);
-    const unitCost = u.material + u.purge + u.stockMat + u.other + u.energy + u.machine + u.failure + u.labor, unitPrice = hasFixed(it) ? +it.fixedPrice : unitCost * mk;
+    const unitCost = u.material + u.purge + u.stockMat + u.other + u.energy + u.machine + u.failure + u.labor, unitPrice = hasFixed(it) ? +fixedOf(it) : unitCost * mk;
     const gross = unitPrice * qty, disc = gross * Math.min(100, Math.max(0, +it.disc || 0)) / 100;
     return {qty, grams:u.g * qty, purgeG:u.pg * qty, purge:u.purge * qty, stockMat:u.stockMat * qty, other:u.other * qty, hours:u.h * qty, material:u.material * qty, energy:u.energy * qty, machine:u.machine * qty, failure:u.failure * qty, labor:u.labor * qty, cost:unitCost * qty, unitCost, unitPrice, gross, disc, net:gross - disc};
   });
@@ -797,10 +799,10 @@ function vParts(){
     <div class="actions"><button class="btn" data-act="import-parts">Importar G-code</button><button class="btn" data-act="new-art">Novo artigo composto</button><button class="btn primary" data-act="new-part">Nova peça</button></div></div>
     <div class="filters"><div class="field" style="flex:1;min-width:200px"><label for="f-part-q">Procurar</label><input id="f-part-q" type="search" value="${esc(st.partQ)}" placeholder="Nome, referência ou cliente"></div>
       <div class="field"><label for="f-part-client">Cliente</label>${sel('f-part-client', [['', 'Todos'], ['__geral', 'Gerais (sem cliente)']].concat(clientOpts()), st.partClient)}</div></div>
-    ${list.length ? `<div class="tbl-wrap"><table><thead><tr><th></th><th>Peça</th><th>Cliente</th><th>Material</th><th class="r">Filamento</th><th class="r">Impressão</th><th class="r">Mão de obra</th><th class="r">Preço ref.</th><th></th></tr></thead><tbody>
-      ${list.map(p => isArt(p) ? artListRow(p) : `<tr class="click" data-act="edit-part" data-id="${p.id}" tabindex="0"><td style="width:52px">${thumbImg(p.thumb)}</td><td><b>${esc(p.name)}</b>${p.ref ? `<br><small class="muted mono">${esc(p.ref)}</small>` : ''}</td><td>${esc(clientName(p) || 'Geral')}</td><td>${filsOf(p).length > 1 ? `<span class="sws">${filsOf(p).map(f => swatch(matHex(f.mat) || f.hex)).join('')}</span>` : ''}${esc(filsTypes(p) || '—')}${filsOf(p).length > 1 ? ` <small class="muted">(${filsOf(p).length} filamentos)</small>` : ''}</td><td class="r num">${num(sumG(filsOf(p)), 1)} g</td><td class="r num">${hm(p.hours)}</td><td class="r num">${p.laborH ? num(p.laborH * 60) + ' min' : '—'}</td><td class="r num">${eur(partPrice(p))}</td>
+    ${list.length ? `<div class="tbl-wrap"><table><thead><tr><th></th><th>Peça</th><th>Cliente</th><th>Material</th><th class="r">Filamento</th><th class="r">Impressão</th><th class="r">Mão de obra</th><th class="r">Preço</th><th></th></tr></thead><tbody>
+      ${list.map(p => isArt(p) ? artListRow(p) : `<tr class="click" data-act="edit-part" data-id="${p.id}" tabindex="0"><td style="width:52px">${thumbImg(p.thumb)}</td><td><b>${esc(p.name)}</b>${p.ref ? `<br><small class="muted mono">${esc(p.ref)}</small>` : ''}</td><td>${esc(clientName(p) || 'Geral')}</td><td>${filsOf(p).length > 1 ? `<span class="sws">${filsOf(p).map(f => swatch(matHex(f.mat) || f.hex)).join('')}</span>` : ''}${esc(filsTypes(p) || '—')}${filsOf(p).length > 1 ? ` <small class="muted">(${filsOf(p).length} filamentos)</small>` : ''}</td><td class="r num">${num(sumG(filsOf(p)), 1)} g</td><td class="r num">${hm(p.hours)}</td><td class="r num">${p.laborH ? num(p.laborH * 60) + ' min' : '—'}</td><td class="r num">${hasFixed(p) ? `<b>${eur(p.price)}</b>` : `${eur(partPrice(p))}<br><small class="warn-txt">calculado · sem preço</small>`}</td>
         <td class="r" style="white-space:nowrap"><button class="btn ghost sm" data-act="quote-part" data-id="${p.id}">Orçamentar</button><button class="btn ghost sm danger" data-act="del" data-col="parts" data-id="${p.id}">Eliminar</button></td></tr>`).join('')}
-    </tbody></table></div><p class="muted" style="margin:0;font-size:.82rem">Preço de referência por unidade, sem IVA, com as margens das Definições e a primeira impressora. No orçamento pode ajustar tudo.</p>`
+    </tbody></table></div><p class="muted" style="margin:0;font-size:.82rem">Preço de venda por unidade, sem IVA. No orçamento entra este preço e só o desconto o altera. Peças sem preço definido usam o cálculo pelo custo (margens das Definições).</p>`
     : `<div class="empty">${S.parts.length ? 'Nenhuma peça corresponde à pesquisa.' : 'Ainda não tem peças no catálogo. Crie uma à mão ou importe ficheiros G-code.'}<div class="actions"><button class="btn" data-act="import-parts">Importar G-code</button><button class="btn" data-act="new-part">Nova peça</button></div></div>`}`;
 }
 function vClients(){
@@ -2439,6 +2441,11 @@ function partPrice(p){
   const s = settings();
   return calcQuote({priceRef:'lib', printerId:(S.printers[0] || {}).id, failure:s.failure, margin:s.margin, laborRate:s.labor, items:[{...(isArt(p) ? expandArt(p) : p), qty:1, disc:0}]}).net;
 }
+// custo e preço sugerido (custo + margem das Definições), ignorando o preço definido
+function partCalc(p){
+  const l = calcQuote({priceRef:'lib', printerId:(S.printers[0] || {}).id, failure:settings().failure, margin:settings().margin, laborRate:settings().labor, items:[{...p, price:null, qty:1, disc:0}]}).lines[0];
+  return {cost:l.unitCost, price:l.unitPrice};
+}
 function partForm(p, opts = {}){
   const isNew = !p, s = settings();
   if (p){ p = cp(p); p.fils = libFils(filsOf(p)); }
@@ -2455,15 +2462,21 @@ function partForm(p, opts = {}){
     <div class="field"><label>Passos de acabamento (opcional)</label>${stepsEditor('pt', p.steps)}<span class="hint">Ex.: remover suportes, lixar, pintar. O tempo entra no custo da mão de obra e os passos são assinalados na encomenda.</span></div>
     <div class="field"><label>Materiais do stock por unidade</label>${stockEditor('pt', p.mats)}<span class="hint">Ex.: ímanes, parafusos, insertos. Entram no custo do orçamento e são descontados do stock quando regista a impressão.</span></div>
     ${F('pt-notes', 'Notas', `<textarea id="pt-notes" placeholder="ex.: Imprimir deitada, com suportes">${esc(p.notes)}</textarea>`)}
-    <p class="muted" style="margin:0">Preço de referência por unidade (margens das Definições, sem IVA): <b class="num" id="pt-price"></b></p>`,
-  {input: () => { filsUpdated('pt'); const n = readPart(); $('#pt-purge-w').hidden = readFils('pt').filter(f => f.mat).length < 2 && !n.changes; $('#pt-purge').textContent = `${num(purgeOf(n), 1)} g`; $('#pt-price').textContent = eur(partPrice(n)); },
+    <div class="price-box"><div class="row">${F('pt-sell', 'Preço de venda por unidade (€, sem IVA)', inp('pt-sell', p.price ?? '', 'number', 'min="0" step="0.01"'))}<div class="field"><label>&nbsp;</label><button type="button" class="btn" data-act="pt-sugg">Usar o preço sugerido</button></div></div>
+      <p class="muted" style="margin:0" id="pt-calc"></p></div>`,
+  {input: () => { filsUpdated('pt'); const n = readPart(); $('#pt-purge-w').hidden = readFils('pt').filter(f => f.mat).length < 2 && !n.changes; $('#pt-purge').textContent = `${num(purgeOf(n), 1)} g`;
+    const c = partCalc(n), pr = n.price;
+    $('#pt-sell').placeholder = `Sugestão: ${num(c.price, 2)}`;
+    $('#pt-calc').innerHTML = `Custo por unidade: <b class="num">${eur(c.cost)}</b> · preço sugerido com a margem de ${num(s.margin)}%: <b class="num">${eur(c.price)}</b>${pr != null ? ` · com o seu preço o lucro é <b class="num ${pr < c.cost ? 'neg-txt' : ''}">${eur(pr - c.cost)}</b>${pr > 0 ? ` (${num((pr - c.cost) / pr * 100, 1)}%)` : ''}` : ''}. No orçamento entra o preço de venda; só o desconto o altera.`; },
    handler: async () => {
     const n = readPart();
     if (!n.name){ toast('Indique o nome da peça.'); return; }
+    if (n.price == null){ n.price = r2(partCalc(n).price); toast(`Sem preço indicado: ficou o sugerido, ${eur(n.price)}.`); }
     await put('parts', n); closeDlg(); toast(isNew ? 'Peça criada.' : 'Peça atualizada.');
     if (opts.after) opts.after(n);
   }});
-  function readPart(){ return withFils({...p, name:val('pt-name').trim(), ref:val('pt-ref').trim(), clientId:val('pt-client'), hours:readHM('pt'), laborH:r2(numv('pt-labor') / 60), changes:Math.max(0, Math.round(numv('pt-chg'))), purgeG:r2(numv('pt-pg')), mats:readStock('pt'), steps:readSteps('pt'), notes:val('pt-notes').trim()}, readFils('pt').filter(f => f.mat)); }
+  partForm.read = () => readPart();
+  function readPart(){ return withFils({...p, name:val('pt-name').trim(), ref:val('pt-ref').trim(), clientId:val('pt-client'), hours:readHM('pt'), laborH:r2(numv('pt-labor') / 60), changes:Math.max(0, Math.round(numv('pt-chg'))), purgeG:r2(numv('pt-pg')), mats:readStock('pt'), steps:readSteps('pt'), price:val('pt-sell') === '' ? null : r2(numv('pt-sell')), notes:val('pt-notes').trim()}, readFils('pt').filter(f => f.mat)); }
   onGcode = r => {
     if (!val('pt-name').trim() || $('#pt-name').dataset.fromGcode){ $('#pt-name').value = r.name; $('#pt-name').dataset.fromGcode = '1'; }
     if (r.fils && r.fils.length) setFils('pt', gcodeFils(r, 'mat'));
@@ -2518,8 +2531,10 @@ function artigoForm(p, opts = {}){
   }
 }
 function partFromGcode(r, clientId){
-  return withFils({id:uid(), name:r.name, ref:'', clientId:clientId || '', hours:r.hours, laborH:0, notes:'',
+  const p = withFils({id:uid(), name:r.name, ref:'', clientId:clientId || '', hours:r.hours, laborH:0, notes:'',
     src:{file:r.file, slicer:r.slicer, type:r.type, layer:r.layer, nozzle:r.nozzle, estimated:r.estimated}, thumb:r.thumb || ''}, gcodeFils(r, 'mat'));
+  p.price = r2(partCalc(p).price);
+  return p;
 }
 function importPartsDlg(){
   openDlg('Importar peças de G-code', `<p style="margin:0">Cada ficheiro (ou cada placa de um .gcode.3mf) é guardado como uma peça nova no catálogo. Depois pode editá-las para acertar o nome, o cliente e a mão de obra.</p>
@@ -2543,7 +2558,7 @@ function quoteForm(q, opts = {}){
   (q.items || []).forEach(it => filsOf(it).forEach(f => ensureOpt(f.mat)));
   const gramsSig = x => filsOf(x).map(f => r2(f.grams)).join('|');
   const artSig = x => JSON.stringify([x.desc, (x.comps || []).map(c => [c.partId, c.qty, gramsSig(c), +c.hours, +(c.laborH || 0), c.mats || [], c.steps || []]), x.mats || [], x.steps || [], x.costs || [], x.fixedPrice ?? null]);
-  const isStale = it => { const p = it.partId && S.parts.find(x => x.id === it.partId); if (p && isArt(it)) return artSig(expandArt(p)) !== artSig(it); return p && (p.name !== it.desc || gramsSig(p) !== gramsSig(it) || +p.hours !== +it.hours || +(p.laborH || 0) !== +(it.laborH || 0) || +(p.changes || 0) !== +(it.changes || 0) || JSON.stringify(p.mats || []) !== JSON.stringify(it.mats || [])); };
+  const isStale = it => { const p = it.partId && S.parts.find(x => x.id === it.partId); if (p && isArt(it)) return artSig(expandArt(p)) !== artSig(it); return p && (p.name !== it.desc || gramsSig(p) !== gramsSig(it) || +p.hours !== +it.hours || +(p.laborH || 0) !== +(it.laborH || 0) || +(p.changes || 0) !== +(it.changes || 0) || JSON.stringify(p.mats || []) !== JSON.stringify(it.mats || []) || JSON.stringify(p.steps || []) !== JSON.stringify(it.steps || []) || (p.price ?? null) !== (it.price ?? null)); };
   const optsHtml = (v) => mo.map(([k, l]) => `<option value="${esc(k)}" ${k === v ? 'selected' : ''}>${esc(l)}</option>`).join('');
   const itemFils = it => { const fl = filsOf(it); return `<div class="field qi-mat${fl.length > 1 ? ' multi' : ''}"><label>${fl.length > 1 ? `Filamentos (${fl.length})` : 'Filamento'}</label><div class="qi-fils">${fl.map((f, k) => `<div class="qf">${swatch(matHex(f.mat) || f.hex)}<select id="i-m-${it.id}-${k}" aria-label="Filamento ${k + 1}">${optsHtml(f.mat)}</select>${fl.length > 1 ? `<span class="num muted">${num(f.grams, 1)} g</span>` : ''}</div>`).join('')}</div></div>`; };
   const artRow = it => { const t = artTotals(it), sm = stepsMin(it) + (it.comps || []).reduce((a, c) => a + stepsMin(c) * c.qty, 0); return `<div class="qitem art" data-id="${it.id}">
@@ -2554,7 +2569,7 @@ function quoteForm(q, opts = {}){
     <div class="qi-price"><span class="u"></span><b class="t"></b></div>
     <button type="button" class="btn ghost" data-act="rm-row" aria-label="Remover artigo">✕</button></div>`; };
   const itemRow = it => isArt(it) ? artRow(it) : `<div class="qitem" data-id="${it.id}">
-    <div class="qi-name">${thumbImg(it.thumb)}<div><b>${esc(it.desc || 'Peça')}</b>${it.ref ? ` <span class="muted mono">${esc(it.ref)}</span>` : ''}<small>${num(it.grams, 1)} g · ${hm(it.hours)}${it.laborH ? ` · ${num(it.laborH * 60)} min mão de obra` : ''} por unidade${purgeOf(it) ? ` · purga ${num(purgeOf(it), 1)} g` : ''}${(it.mats || []).length ? ' · ' + esc(stockText(it.mats)) : ''}${it.partId ? '' : ' · sem ficha no catálogo'}</small>${isStale(it) ? `<button type="button" class="linkbtn" data-act="refresh-item">A peça foi alterada no catálogo. Atualizar</button>` : ''}</div></div>
+    <div class="qi-name">${thumbImg(it.thumb)}<div><b>${esc(it.desc || 'Peça')}</b>${it.ref ? ` <span class="muted mono">${esc(it.ref)}</span>` : ''}<small>${num(it.grams, 1)} g · ${hm(it.hours)}${it.laborH ? ` · ${num(it.laborH * 60)} min mão de obra` : ''} por unidade${hasFixed(it) ? ` · <b>preço da peça ${eur(it.price)}</b>` : ''}${purgeOf(it) ? ` · purga ${num(purgeOf(it), 1)} g` : ''}${(it.mats || []).length ? ' · ' + esc(stockText(it.mats)) : ''}${it.partId ? '' : ' · sem ficha no catálogo'}</small>${isStale(it) ? `<button type="button" class="linkbtn" data-act="refresh-item">A peça foi alterada no catálogo. Atualizar</button>` : ''}</div></div>
     ${itemFils(it)}
     ${F('i-q-' + it.id, 'Qtd.', inp('i-q-' + it.id, it.qty || 1, 'number', 'min="1" step="1"'))}
     ${F('i-x-' + it.id, 'Desc. %', inp('i-x-' + it.id, it.disc || 0, 'number', 'min="0" max="100" step="0.5"'))}
@@ -2562,13 +2577,13 @@ function quoteForm(q, opts = {}){
     <button type="button" class="btn ghost" data-act="rm-row" aria-label="Remover peça">✕</button></div>`;
   // filamentos da peça; os genéricos passam para a bobine mais parecida (material e cor) com stock
   const partFils = (p, qty) => filsOf(p).map(f => { if (f.mat && f.mat.startsWith('m:')){ const lib = (libFind(f.mat.slice(2)) || {}).id || f.mat.slice(2); const sp = bestSpool(matType(f.mat), f.hex, f.grams * qty, lib); if (sp) return {mat:'s:' + sp.id, grams:f.grams, hex:f.hex, lib}; return {mat:f.mat, grams:f.grams, hex:f.hex, lib}; } return {mat:f.mat, grams:f.grams, hex:f.hex}; });
-  const itemFromPart = (p, qty = 1) => isArt(p) ? {...expandArt(p, partFils, qty), id:uid(), qty, disc:0} : withFils({id:uid(), partId:p.id, desc:p.name, ref:p.ref || '', hours:+p.hours || 0, laborH:+p.laborH || 0, changes:+p.changes || 0, purgeG:p.purgeG ?? null, mats:cp(p.mats || []), thumb:p.thumb || '', qty, disc:0}, partFils(p, qty));
+  const itemFromPart = (p, qty = 1) => isArt(p) ? {...expandArt(p, partFils, qty), id:uid(), qty, disc:0} : withFils({id:uid(), partId:p.id, desc:p.name, ref:p.ref || '', hours:+p.hours || 0, laborH:+p.laborH || 0, changes:+p.changes || 0, purgeG:p.purgeG ?? null, mats:cp(p.mats || []), steps:cp(p.steps || []), price:p.price ?? null, thumb:p.thumb || '', qty, disc:0}, partFils(p, qty));
   const addItem = it => { filsOf(it).forEach(f => ensureOpt(f.mat)); snap[it.id] = it; const w = document.createElement('div'); w.innerHTML = itemRow(it); $('#q-items').append(w.firstElementChild); $('#q-empty').hidden = true; };
   quoteForm.addPart = (pid, qty) => { const p = S.parts.find(x => x.id === pid); if (p){ addItem(itemFromPart(p, qty)); onInput && onInput(); } };
   quoteForm.refreshItem = id => {
     const old = snap[id], p = old && S.parts.find(x => x.id === old.partId); if (!p) return;
     const qty = numv('i-q-' + id) || 1;
-    const n = isArt(p) ? {...itemFromPart(p, qty), id, disc:numv('i-x-' + id)} : withFils({...old, desc:p.name, ref:p.ref || '', hours:+p.hours || 0, laborH:+p.laborH || 0, changes:+p.changes || 0, purgeG:p.purgeG ?? null, mats:cp(p.mats || []), thumb:p.thumb || '', qty, disc:numv('i-x-' + id)}, partFils(p, qty));
+    const n = isArt(p) ? {...itemFromPart(p, qty), id, disc:numv('i-x-' + id)} : withFils({...old, desc:p.name, ref:p.ref || '', hours:+p.hours || 0, laborH:+p.laborH || 0, changes:+p.changes || 0, purgeG:p.purgeG ?? null, mats:cp(p.mats || []), steps:cp(p.steps || []), price:p.price ?? null, thumb:p.thumb || '', qty, disc:numv('i-x-' + id)}, partFils(p, qty));
     filsOf(n).forEach(f => ensureOpt(f.mat)); snap[id] = n; const row = document.querySelector(`.qitem[data-id="${id}"]`); const w = document.createElement('div'); w.innerHTML = itemRow(n); row.replaceWith(w.firstElementChild); onInput && onInput();
   };
   const partOpts = cid => {
@@ -2597,6 +2612,7 @@ function quoteForm(q, opts = {}){
       <div class="empty" id="q-empty" ${(q.items || []).length ? 'hidden' : ''}>Escolha peças do catálogo para montar o orçamento.</div>
       <div class="row">${F('q-rate', 'Mão de obra (€/hora)', inp('q-rate', q.laborRate, 'number', 'min="0" step="0.5"'))}${F('q-labor', 'Mão de obra adicional (h)', inp('q-labor', q.laborH || 0, 'number', 'min="0" step="0.25"'))}${F('q-extras', 'Extras (€)', inp('q-extras', q.extras, 'number', 'min="0" step="0.01"'))}</div>
       <div class="row">${F('q-failure', 'Margem p/ falhas (%)', inp('q-failure', q.failure, 'number', 'min="0" step="1"'))}${F('q-margin', 'Margem de lucro (%)', inp('q-margin', q.margin, 'number', 'min="0" step="1"'))}</div>
+      <p class="hint muted" style="margin:-4px 0 0">As margens só se aplicam às peças sem preço definido e à mão de obra adicional. As peças com preço no catálogo entram com esse preço (só o desconto o altera).</p>
       <label class="check"><input type="checkbox" id="q-vat" ${q.vat ? 'checked' : ''}> Incluir IVA (${num(s.vat)}%)</label>
       <div class="pay-box"><div class="row">${F('q-adj', 'Pagamento na adjudicação (%)', inp('q-adj', q.payAdj ?? s.payAdj, 'number', 'min="0" max="100" step="1"'))}<div class="field"><label>Na entrega</label><div class="pay-ent" id="q-ent"></div></div></div>
         <div class="chips">${[[50, '50 / 50'], [30, '30 / 70'], [100, 'Tudo na adjudicação'], [0, 'Tudo na entrega']].map(([v, l]) => `<button type="button" class="chip" data-act="pay-preset" data-v="${v}">${l}</button>`).join('')}</div></div>
@@ -2692,6 +2708,7 @@ document.addEventListener('click', async e => {
       case 'olabels': orderLabelsDlg(b.dataset.id); break;
       case 'step-tog': await toggleStep(b.dataset.o, b.dataset.item, b.dataset.step, b.checked); break;
       case 'add-step': { const w = document.createElement('div'); w.innerHTML = stepsEditor.row(b.dataset.px, {name:b.dataset.name || '', min:10}); const r = w.firstElementChild; $('#' + b.dataset.px + '-steps').append(r); if (!b.dataset.name) r.querySelector('input').focus(); onInput && onInput(); break; }
+      case 'pt-sugg': { $('#pt-sell').value = r2(partCalc({...partForm.read(), price:null}).price).toFixed(2); onInput && onInput(); break; }
       case 'add-comp': { const w = document.createElement('div'); w.innerHTML = artigoForm.compRow(); $('#ar-comps').append(w.firstElementChild); onInput && onInput(); break; }
       case 'add-cost': { const w = document.createElement('div'); w.innerHTML = artigoForm.costRow(); $('#ar-costs').append(w.firstElementChild); onInput && onInput(); break; }
       case 'new-art': artigoForm(); break;

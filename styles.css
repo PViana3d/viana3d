@@ -424,3 +424,5 @@ a.btn.primary{color:#fff}
 .lib-row{grid-template-columns:minmax(0,1.6fr) minmax(0,1fr) 110px 70px 36px}
 .lib-use{font-size:.8rem;align-self:center;padding-top:18px}
 @media (max-width:600px){.lib-row{grid-template-columns:1fr 1fr;}.lib-use{padding-top:0}}
+
+.price-box{background:var(--sunk);border:1px solid var(--line);border-radius:10px;padding:12px 14px;display:flex;flex-direction:column;gap:6px}
