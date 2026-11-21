@@ -426,3 +426,10 @@ a.btn.primary{color:#fff}
 @media (max-width:600px){.lib-row{grid-template-columns:1fr 1fr;}.lib-use{padding-top:0}}
 
 .price-box{background:var(--sunk);border:1px solid var(--line);border-radius:10px;padding:12px 14px;display:flex;flex-direction:column;gap:6px}
+
+/* imagem de peças e artigos */
+.img-pick{display:flex;gap:14px;align-items:center;flex-wrap:wrap}
+.img-prev{width:96px;height:96px;border:1px solid var(--line);border-radius:8px;background:var(--sunk);display:grid;place-items:center;overflow:hidden;font-size:.78rem}
+.img-prev img{max-width:100%;max-height:100%;object-fit:contain}
+.img-btns{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.img-btns .hint{flex-basis:100%}

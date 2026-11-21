@@ -1280,6 +1280,37 @@ function vProduction(){
 }
 
 /* ---------- PDF do orçamento ---------- */
+/* ---------- imagem própria de peças e artigos (miniatura no orçamento e nos PDFs) ---------- */
+const IMGV = {};
+function imgPicker(px, img, fallback){
+  IMGV[px] = img || '';
+  return `<div class="field"><label>Imagem (aparece no orçamento e no PDF)</label><div class="img-pick"><div class="img-prev" id="${px}-img-prev">${imgPrevHtml(px, fallback)}</div>
+    <div class="img-btns"><label class="btn sm file-btn">${img ? 'Trocar imagem' : 'Escolher imagem'}<input type="file" id="${px}-img-file" accept="image/*"></label><button type="button" class="btn sm ghost" data-act="img-rm" data-px="${px}" ${img ? '' : 'hidden'}>Remover</button>
+    <span class="hint" id="${px}-img-hint">${img ? 'Imagem escolhida por si.' : fallback ? 'Sem imagem própria: usa a imagem do G-code.' : 'Fotografia ou render da peça (JPG, PNG…). É reduzida automaticamente.'}</span></div></div></div>`;
+}
+imgPicker.fb = {};
+function imgPrevHtml(px, fallback){ if (fallback !== undefined) imgPicker.fb[px] = fallback; const src = IMGV[px] || imgPicker.fb[px]; return src ? `<img src="${esc(src)}" alt="">` : '<span class="muted">Sem imagem</span>'; }
+function imgRefresh(px){
+  $(`#${px}-img-prev`).innerHTML = imgPrevHtml(px);
+  const rm = document.querySelector(`[data-act="img-rm"][data-px="${px}"]`); if (rm) rm.hidden = !IMGV[px];
+  $(`#${px}-img-hint`).textContent = IMGV[px] ? 'Imagem escolhida por si.' : imgPicker.fb[px] ? 'Sem imagem própria: usa a imagem do G-code.' : 'Fotografia ou render da peça (JPG, PNG…). É reduzida automaticamente.';
+  const lab = document.querySelector(`#${px}-img-file`); if (lab) lab.parentElement.firstChild.textContent = IMGV[px] ? 'Trocar imagem' : 'Escolher imagem';
+}
+// reduz para no máximo 320 px e JPEG, para não pesar nos orçamentos
+function readItemImage(file, px){
+  if (!/^image\//.test(file.type)){ toast('Escolha um ficheiro de imagem.'); return; }
+  const r = new FileReader();
+  r.onload = () => { const img = new Image();
+    img.onload = () => {
+      const sc = Math.min(1, 320 / img.width, 320 / img.height), cv = document.createElement('canvas');
+      cv.width = Math.max(1, Math.round(img.width * sc)); cv.height = Math.max(1, Math.round(img.height * sc));
+      const x = cv.getContext('2d'); x.fillStyle = '#fff'; x.fillRect(0, 0, cv.width, cv.height); x.drawImage(img, 0, 0, cv.width, cv.height);
+      IMGV[px] = cv.toDataURL('image/jpeg', .82); imgRefresh(px);
+    };
+    img.onerror = () => toast('Não foi possível ler esta imagem.');
+    img.src = r.result; };
+  r.readAsDataURL(file);
+}
 function readLogo(file){
   const r = new FileReader();
   r.onload = () => {
@@ -1643,6 +1674,7 @@ async function exportOrderPdf(o, kind){
   openPdfReady(name, blob, file, canShareFile(file));
 }
 async function exportQuotePdf(q){
+  q = {...q, items:(q.items || []).map(it => { const pp = it.partId && S.parts.find(x => x.id === it.partId); return pp ? {...it, thumb:pp.thumb || ''} : it; })};
   if (!(q.items || []).length){ toast('Adicione peças ao orçamento antes de gerar o PDF.'); return; }
   toast('A gerar o PDF…');
   let jsPDF;
@@ -2450,11 +2482,13 @@ function partForm(p, opts = {}){
   const isNew = !p, s = settings();
   if (p){ p = cp(p); p.fils = libFils(filsOf(p)); }
   p = p ? cp(p) : {id:uid(), name:'', ref:'', clientId:opts.clientId || '', fils:[{mat:firstMat(), grams:0, hex:''}], hours:0, laborH:0, notes:'', src:null, thumb:''};
-  const srcBox = () => p.src ? `${thumbImg(p.thumb, 56)}<span>Dados do ficheiro <b>${esc(p.src.file)}</b><br>${esc(srcLine(p.src))}${p.src.estimated ? ' · peso calculado pelo comprimento' : ''}</span>` : '';
+  if (!p.gthumb && p.thumb && !p.img) p.gthumb = p.thumb;
+  const srcBox = () => p.src ? `${thumbImg(p.gthumb || p.thumb, 56)}<span>Dados do ficheiro <b>${esc(p.src.file)}</b><br>${esc(srcLine(p.src))}${p.src.estimated ? ' · peso calculado pelo comprimento' : ''}</span>` : '';
   openDlg(isNew ? 'Nova peça' : 'Editar peça', `
     ${dropZone(false, 'Preenche o filamento, o tempo e o material a partir do ficheiro do slicer (.gcode ou .gcode.3mf).')}
     <div class="src-box" id="pt-src" ${p.src ? '' : 'hidden'}>${srcBox()}</div>
     <div class="row">${F('pt-name', 'Nome da peça', inp('pt-name', p.name, 'text', 'placeholder="ex.: Suporte de parede"'))}${F('pt-ref', 'Referência', inp('pt-ref', p.ref, 'text', 'placeholder="opcional"'))}${F('pt-client', 'Cliente', sel('pt-client', clientOpts([['', 'Geral (todos os clientes)']]), p.clientId))}</div>
+    ${imgPicker('pt', p.img, p.gthumb || '')}
     <div class="field"><label>Filamentos por unidade (até ${MAXF})</label>${filEditor('pt', filsOf(p), 'mat')}<span class="hint">Peças multicor ou multimaterial: um filamento por cor/material, com as gramas de cada um.</span></div>
     <div class="row">${hmInputs('pt', p.hours)}${F('pt-labor', 'Mão de obra por unidade (min)', inp('pt-labor', Math.round((p.laborH || 0) * 60), 'number', 'min="0" step="1"'))}</div>
     <div class="purge-box" id="pt-purge-w"><div class="row">${F('pt-chg', 'Trocas de cor por unidade', inp('pt-chg', p.changes || 0, 'number', 'min="0" step="1"'))}${F('pt-pg', 'Purga por troca (g)', inp('pt-pg', p.purgeG ?? s.purgeG, 'number', 'min="0" step="0.1"'))}<div class="field"><label>Desperdício por unidade</label><div class="pay-ent" id="pt-purge"></div></div></div>
@@ -2471,6 +2505,7 @@ function partForm(p, opts = {}){
    handler: async () => {
     const n = readPart();
     if (!n.name){ toast('Indique o nome da peça.'); return; }
+    n.img = IMGV.pt || ''; n.thumb = n.img || n.gthumb || '';
     if (n.price == null){ n.price = r2(partCalc(n).price); toast(`Sem preço indicado: ficou o sugerido, ${eur(n.price)}.`); }
     await put('parts', n); closeDlg(); toast(isNew ? 'Peça criada.' : 'Peça atualizada.');
     if (opts.after) opts.after(n);
@@ -2481,7 +2516,7 @@ function partForm(p, opts = {}){
     if (!val('pt-name').trim() || $('#pt-name').dataset.fromGcode){ $('#pt-name').value = r.name; $('#pt-name').dataset.fromGcode = '1'; }
     if (r.fils && r.fils.length) setFils('pt', gcodeFils(r, 'mat'));
     if (r.hours) setHM('pt', r.hours);
-    p.src = {file:r.file, slicer:r.slicer, type:r.type, layer:r.layer, nozzle:r.nozzle, estimated:r.estimated}; p.thumb = r.thumb || '';
+    p.src = {file:r.file, slicer:r.slicer, type:r.type, layer:r.layer, nozzle:r.nozzle, estimated:r.estimated}; p.gthumb = r.thumb || ''; imgPicker.fb.pt = p.gthumb; imgRefresh('pt');
     const box = $('#pt-src'); box.innerHTML = srcBox(); box.hidden = false;
   };
 }
@@ -2502,6 +2537,7 @@ function artigoForm(p, opts = {}){
     <div class="field"><label>Outros custos por artigo</label><div class="items" id="ar-costs">${(p.costs || []).map(costRow).join('')}</div><div class="srow-add"><button type="button" class="btn sm" data-act="add-cost">Adicionar custo</button></div><span class="hint">O que não controla em stock, ex.: uma peça comprada de propósito.</span></div>
     <div class="row"><div class="field"><label for="ar-pmode">Preço de venda</label>${sel('ar-pmode', [['calc', 'Calculado (custo + margem)'], ['fixed', 'Preço fixo']], fixed ? 'fixed' : 'calc')}</div><div class="field" id="ar-fixed-w"><label for="ar-fixed">Preço fixo por artigo (€, sem IVA)</label>${inp('ar-fixed', fixed ? p.fixedPrice : '', 'number', 'min="0" step="0.01"')}</div></div>
     <div class="sum art-sum" id="ar-sum"></div>
+    ${imgPicker('ar', p.img, ((p.comps || []).map(c => S.parts.find(x => x.id === c.partId)).find(x => x && x.thumb) || {}).thumb || '')}
     ${F('ar-notes', 'Notas', `<textarea id="ar-notes" placeholder="ex.: Colar a base antes de pintar">${esc(p.notes || '')}</textarea>`)}`,
   {wide:true, input: () => {
     $('#ar-fixed-w').hidden = val('ar-pmode') !== 'fixed';
@@ -2518,7 +2554,7 @@ function artigoForm(p, opts = {}){
     if (!n.name){ toast('Indique o nome do artigo.'); return; }
     if (!n.comps.length && !n.mats.length){ toast('Junte pelo menos uma peça impressa ou um material.'); return; }
     if (n.comps.some(c => c.partId === n.id)){ toast('Um artigo não pode conter-se a si próprio.'); return; }
-    const first = n.comps.map(c => S.parts.find(x => x.id === c.partId)).find(x => x && x.thumb); n.thumb = first ? first.thumb : '';
+    const first = n.comps.map(c => S.parts.find(x => x.id === c.partId)).find(x => x && x.thumb); n.img = IMGV.ar || ''; n.thumb = n.img || (first ? first.thumb : '');
     await put('parts', n); closeDlg(); toast(isNew ? 'Artigo criado.' : 'Artigo atualizado.');
     if (opts.after) opts.after(n);
   }});
@@ -2551,6 +2587,7 @@ function quoteForm(q, opts = {}){
   q = q ? cp(q) : {id:uid(), priceRef:'lib', number:nextQuoteNumber(), clientId:opts.clientId || '', client:'', date:today(), validity:15, deliveryDays:s.delivery, status:'rascunho', printerId:(S.printers[0] || {}).id || '', items:[], laborRate:s.labor, laborH:0, extras:0, failure:s.failure, margin:s.margin, vat:true, notes:''};
   if (q.laborRate == null || q.laborRate === '') q.laborRate = s.labor;
   // cópia fixa de cada peça no orçamento (para o valor não mudar sozinho se a peça for alterada)
+  (q.items || []).forEach(it => { const pp = it.partId && S.parts.find(x => x.id === it.partId); if (pp) it.thumb = pp.thumb || ''; });
   const snap = {}; (q.items || []).forEach(it => { snap[it.id] = cp(it); });
   quoteForm.snap = snap;
   const mo = matOptions();
@@ -2709,6 +2746,7 @@ document.addEventListener('click', async e => {
       case 'step-tog': await toggleStep(b.dataset.o, b.dataset.item, b.dataset.step, b.checked); break;
       case 'add-step': { const w = document.createElement('div'); w.innerHTML = stepsEditor.row(b.dataset.px, {name:b.dataset.name || '', min:10}); const r = w.firstElementChild; $('#' + b.dataset.px + '-steps').append(r); if (!b.dataset.name) r.querySelector('input').focus(); onInput && onInput(); break; }
       case 'pt-sugg': { $('#pt-sell').value = r2(partCalc({...partForm.read(), price:null}).price).toFixed(2); onInput && onInput(); break; }
+      case 'img-rm': IMGV[b.dataset.px] = ''; imgRefresh(b.dataset.px); break;
       case 'add-comp': { const w = document.createElement('div'); w.innerHTML = artigoForm.compRow(); $('#ar-comps').append(w.firstElementChild); onInput && onInput(); break; }
       case 'add-cost': { const w = document.createElement('div'); w.innerHTML = artigoForm.costRow(); $('#ar-costs').append(w.firstElementChild); onInput && onInput(); break; }
       case 'new-art': artigoForm(); break;
@@ -2863,6 +2901,7 @@ document.addEventListener('change', e => {
   if (e.target.id === 'f-printer'){ st.repPrinter = e.target.value; render(); }
   if (e.target.id === 'f-part-client'){ st.partClient = e.target.value; render(); }
   if (e.target.id === 's-logo' && e.target.files[0]) readLogo(e.target.files[0]);
+  if (/-img-file$/.test(e.target.id) && e.target.files[0]){ const f = e.target.files[0]; e.target.value = ''; readItemImage(f, e.target.id.replace(/-img-file$/, '')); }
   if (e.target.id === 'backup-file' && e.target.files[0]){ const f = e.target.files[0]; e.target.value = ''; importBackupFile(f); }
   if (e.target.id === 'm-printer'){ $('#m-task').innerHTML = maintForm.taskOpts(e.target.value).map(([k, l]) => `<option value="${esc(k)}">${esc(l)}</option>`).join(''); const p = S.printers.find(x => x.id === e.target.value); $('#m-hours').value = p ? p.hours || 0 : 0; onInput && onInput(); }
 });
