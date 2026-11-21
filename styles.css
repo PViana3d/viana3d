@@ -419,3 +419,8 @@ a.btn.primary{color:#fff}
 .bm-help{font-size:.88rem}
 .bm-help summary{cursor:pointer;color:var(--accent);font-weight:500}
 .bm-help ol{margin:8px 0;padding-left:20px;display:flex;flex-direction:column;gap:4px}
+
+/* biblioteca de materiais */
+.lib-row{grid-template-columns:minmax(0,1.6fr) minmax(0,1fr) 110px 70px 36px}
+.lib-use{font-size:.8rem;align-self:center;padding-top:18px}
+@media (max-width:600px){.lib-row{grid-template-columns:1fr 1fr;}.lib-use{padding-top:0}}

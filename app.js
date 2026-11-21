@@ -62,7 +62,8 @@ async function del(col, id){
   if (error){ await refetch(); dbErr(error); }
 }
 async function putSettings(s){ await put('config', {...cp(s), id:'settings'}); }
-const settings = () => ({...DEF, ...S.settings, matPrices:{...DEF.matPrices, ...(S.settings.matPrices || {})}});
+const settings = () => { const mp = {...DEF.matPrices, ...(S.settings.matPrices || {})};
+  return {...DEF, ...S.settings, matPrices:mp, materials:Array.isArray(S.settings.materials) && S.settings.materials.length ? S.settings.materials : Object.entries(mp).map(([k, v]) => ({id:k, name:k, type:k, eurKg:v}))}; };
 
 let rTimer = null;
 function scheduleRender(){ clearTimeout(rTimer); rTimer = setTimeout(render, 40); }
@@ -379,22 +380,34 @@ function taskState(p, t){
   return {...main, parts, either:parts.length > 1};
 }
 const taskEvery = t => t.unit === 'hd' ? `a cada ${num(t.interval)} h ou ${num(t.intervalDays)} dias, o que vier primeiro` : `a cada ${num(t.interval)} ${t.unit === 'd' ? (+t.interval === 1 ? 'dia' : 'dias') : 'h'}`;
-function matEurKg(code){
-  const s = settings();
+/* ---------- biblioteca de materiais: preço de referência (€/kg) usado em todos os orçamentos ---------- */
+const MATTYPES = ['PLA', 'PETG', 'ABS', 'ASA', 'TPU', 'PC', 'Nylon', 'Resina'];
+const libMats = () => settings().materials;
+const libFind = id => { if (!id) return null; const L = libMats(), U = String(id).toUpperCase(); return L.find(m => m.id === id) || L.find(m => m.name.toUpperCase() === U) || L.find(m => (m.type || '').toUpperCase() === U) || null; };
+const baseTypes = () => [...new Set(MATTYPES.concat(libMats().map(m => m.type)).filter(t => t && t !== 'Outro'))].concat('Outro');
+// material da biblioteca de uma bobine: o escolhido na bobine, ou o primeiro do mesmo tipo
+const spoolLib = sp => sp ? (libMats().find(m => m.id === sp.matId) || libFind(sp.material)) : null;
+// preço de referência de um filamento (aceita o código 'm:…'/'s:…' ou o objeto do filamento, que pode trazer lib = material da peça)
+function matEurKg(f){
+  const code = typeof f === 'string' ? f : (f && f.mat) || '', lib = typeof f === 'object' && f ? f.lib : '';
   if (!code) return 0;
-  if (code.startsWith('s:')){ const sp = S.spools.find(x => x.id === code.slice(2)); return sp ? spoolEurKg(sp) : 0; }
-  return s.matPrices[code.slice(2)] || 0;
+  if (code.startsWith('s:')){
+    const sp = S.spools.find(x => x.id === code.slice(2));
+    const m = (sp && sp.matId && libMats().find(x => x.id === sp.matId)) || (lib && libFind(lib)) || spoolLib(sp);
+    return m ? +m.eurKg || 0 : sp ? spoolEurKg(sp) : 0;
+  }
+  const m = libFind(code.slice(2)); return m ? +m.eurKg || 0 : 0;
 }
 function matLabel(code){
   if (!code) return '—';
   if (code.startsWith('s:')){ const sp = S.spools.find(x => x.id === code.slice(2)); return sp ? spoolLabel(sp) : 'Bobine removida'; }
-  return code.slice(2) + ' (genérico)';
+  const m = libFind(code.slice(2)); return m ? m.name : code.slice(2) + ' (fora da biblioteca)';
 }
 /* ---------- vários filamentos por peça (até 20) ---------- */
 const MAXF = 20;
 // lista de filamentos de uma peça / linha de orçamento / impressão planeada (aceita o formato antigo de um só filamento)
 function filsOf(x){
-  if (x && Array.isArray(x.fils) && x.fils.length) return x.fils.slice(0, MAXF).map(f => ({mat:f.mat || '', grams:+f.grams || 0, hex:f.hex || '', spoolId:f.spoolId || ''}));
+  if (x && Array.isArray(x.fils) && x.fils.length) return x.fils.slice(0, MAXF).map(f => ({mat:f.mat || '', grams:+f.grams || 0, hex:f.hex || '', spoolId:f.spoolId || '', ...(f.lib ? {lib:f.lib} : {})}));
   return [{mat:(x && x.mat) || '', grams:+(x && x.grams) || 0, hex:'', spoolId:(x && x.spoolId) || ''}];
 }
 const sumG = fs => fs.reduce((a, f) => a + (+f.grams || 0), 0);
@@ -410,8 +423,9 @@ const swatch = hex => `<i class="sw" style="background:${esc(hex || 'transparent
 // distância entre duas cores #rrggbb (0 = iguais)
 function hexDist(a, b){ const p = h => { const m = /^#?([0-9a-f]{6})$/i.exec(h || ''); return m ? [0, 2, 4].map(i => parseInt(m[1].substr(i, 2), 16)) : null; }; const x = p(a), y = p(b); if (!x || !y) return 999; return Math.hypot(x[0] - y[0], x[1] - y[1], x[2] - y[2]); }
 // melhor bobine para um material (e cor, se conhecida) com filamento suficiente
-function bestSpool(type, hex, need){
-  const list = S.spools.filter(s => s.material === type && spoolRemain(s) > 0);
+function bestSpool(type, hex, need, libId){
+  let list = S.spools.filter(s => s.material === type && spoolRemain(s) > 0);
+  if (libId){ const own = list.filter(s => (spoolLib(s) || {}).id === libId); if (own.length) list = own; }
   if (!list.length) return null;
   const enough = list.filter(s => spoolRemain(s) >= (need || 0)), pool = enough.length ? enough : list;
   return pool.slice().sort((a, b) => (hex ? hexDist(a.hex, hex) - hexDist(b.hex, hex) : 0) || spoolRemain(b) - spoolRemain(a))[0];
@@ -479,6 +493,8 @@ function calcQuote(q){
   const rate = q.laborRate == null || q.laborRate === '' ? s.labor : +q.laborRate || 0;
   const fail = (+q.failure || 0) / 100, mk = 1 + (+q.margin || 0) / 100;
   // custo de uma unidade: peça impressa, ou artigo = soma das peças + materiais + passos + outros custos
+  // orçamentos novos: preço da biblioteca de materiais; os anteriores mantêm o preço real das bobines com que foram feitos
+  const eurKg = q.priceRef === 'lib' ? matEurKg : f => { const c = f.mat || ''; if (c.startsWith('s:')){ const sp = S.spools.find(x => x.id === c.slice(2)); return sp ? spoolEurKg(sp) : 0; } return s.matPrices[c.slice(2)] ?? matEurKg(f); };
   const unit = it => {
     if (isArt(it)){
       const a = {material:0, purge:0, stockMat:0, other:0, energy:0, machine:0, failure:0, labor:0, g:0, pg:0, h:0};
@@ -487,8 +503,8 @@ function calcQuote(q){
       return a;
     }
     const fl = filsOf(it), g = sumG(fl), h = +it.hours || 0;
-    const material = fl.reduce((a, f) => a + f.grams / 1000 * matEurKg(f.mat), 0), energy = h * watts / 1000 * s.kwh, machine = h * wearH;
-    const pg = purgeOf(it), purge = pg / 1000 * (g ? material / g * 1000 : matEurKg((fl[0] || {}).mat));
+    const material = fl.reduce((a, f) => a + f.grams / 1000 * eurKg(f), 0), energy = h * watts / 1000 * s.kwh, machine = h * wearH;
+    const pg = purgeOf(it), purge = pg / 1000 * (g ? material / g * 1000 : eurKg(fl[0] || ''));
     const stockMat = stockCostOf(it.mats);
     const failure = (material + purge + energy + machine) * fail, labor = ((+it.laborH || 0) + stepsMin(it) / 60) * rate;
     return {material, purge, stockMat, other:0, energy, machine, failure, labor, g, pg, h};
@@ -706,6 +722,11 @@ function vReports(){
     ${profitTable(st.month)}`;
 }
 
+function libRow(m = {}){
+  const r = m.id || uid(), n = S.parts.filter(p => filsOf(p).some(f => f.mat === 'm:' + r)).length;
+  return `<div class="srow lib-row" data-r="${esc(r)}">${F('lib-n-' + r, 'Material', inp('lib-n-' + r, m.name || '', 'text', 'placeholder="ex.: PLA Seda"'))}${F('lib-t-' + r, 'Tipo', sel('lib-t-' + r, baseTypes().map(t => [t, t]), m.type || 'PLA'))}${F('lib-e-' + r, '€/kg', inp('lib-e-' + r, m.eurKg ?? 20, 'number', 'min="0" step="0.5"'))}<span class="lib-use muted">${n ? `${n} peça${n === 1 ? '' : 's'}` : ''}</span><button type="button" class="btn ghost" data-act="lib-rm" aria-label="Remover material">✕</button></div>`;
+}
+const readLib = () => [...document.querySelectorAll('#lib-rows .lib-row')].map(r => ({id:r.dataset.r, name:val('lib-n-' + r.dataset.r).trim(), type:val('lib-t-' + r.dataset.r), eurKg:r2(numv('lib-e-' + r.dataset.r))}));
 function vSettings(){
   const s = settings();
   return `<div class="head"><div><div class="eyebrow">Configuração</div><h1>Definições</h1><p>Estes valores entram no cálculo de todos os orçamentos.</p></div></div>
@@ -735,9 +756,10 @@ function vSettings(){
       <div class="field"><label for="s-shopa">Abre às</label><input id="s-shopa" type="time" value="${esc(s.shopStart)}"></div>
       <div class="field"><label for="s-shopb">Fecha às</label><input id="s-shopb" type="time" value="${esc(s.shopEnd)}"></div>
     </div>
-    <h2>Preço de referência dos materiais (€/kg)</h2>
-    <p class="muted" style="margin:0">Usado nos orçamentos quando escolhe um material genérico em vez de uma bobine específica.</p>
-    <div class="row">${Object.entries(s.matPrices).map(([k, v]) => `<div class="field"><label for="mp-${k}">${k}</label><input id="mp-${k}" data-mat="${k}" type="number" step="0.5" min="0" value="${v}"></div>`).join('')}</div>
+    <h2 id="biblioteca">Biblioteca de materiais</h2>
+    <p class="muted" style="margin:0">Os materiais que escolhe nas peças. O preço por kg daqui é o usado em <b>todos</b> os orçamentos e no preço de referência das peças, seja qual for a bobine usada. O custo real das bobines conta no lucro real das encomendas.</p>
+    <div class="items" id="lib-rows">${s.materials.map(libRow).join('')}</div>
+    <div class="srow-add"><button type="button" class="btn sm" data-act="lib-add">Adicionar material</button></div>
     <h2>Dados da empresa no PDF do orçamento</h2>
     <div class="row">
       <div class="field"><label for="s-nif">NIF</label><input id="s-nif" value="${esc(s.cNif)}"></div>
@@ -1290,7 +1312,7 @@ const pdfT = s => String(s ?? '').replace(/[    ]/g, ' ').replace(/[‘�
 const hexRgb = h => { const m = /^#?([0-9a-f]{6})$/i.exec(h || ''); const n = m ? parseInt(m[1], 16) : 0x0A7470; return [n >> 16 & 255, n >> 8 & 255, n & 255]; };
 const addDaysStr = (d, n) => { const x = new Date((d || today()) + 'T12:00'); x.setDate(x.getDate() + (+n || 0)); return ymd(x); };
 const longDate = d => d ? new Date(d + 'T12:00').toLocaleDateString('pt-PT', {day:'numeric', month:'long', year:'numeric'}) : '—';
-const clientMat = code => !code ? '' : code.startsWith('s:') ? (() => { const s = S.spools.find(x => x.id === code.slice(2)); return s ? `${s.material} ${s.color.replace(/\s*\(exemplo\)/, '')}` : ''; })() : code.slice(2);
+const clientMat = code => !code ? '' : code.startsWith('s:') ? (() => { const s = S.spools.find(x => x.id === code.slice(2)); return s ? `${s.material} ${s.color.replace(/\s*\(exemplo\)/, '')}` : ''; })() : ((libFind(code.slice(2)) || {}).name || code.slice(2));
 
 function quotePdf(jsPDF, q){
   const s = settings(), c = calcQuote(q), cl = S.clients.find(x => x.id === q.clientId) || (q.clientId ? null : q._newClient) || null;
@@ -1702,7 +1724,7 @@ function purchaseForm(p){
   const isNew = !p, s = settings();
   p = p ? cp(p) : {id:uid(), number:nextNumber(S.purchases, 'COMP'), date:today(), supplier:'', invoice:'', status:'encomendada', receivedDate:'', shipping:0, shipSplit:true, notes:'', lines:[], applied:false};
   const locked = !!p.applied;
-  const mats = Object.keys(s.matPrices).concat('Outro');
+  const mats = baseTypes();
   const catOpts = PCAT.filter(c => c !== 'Filamento').map(c => [c, c]);
   const stockOpts = [['__novo', '+ Material novo…']].concat([...S.stock].sort((a, b) => a.name.localeCompare(b.name, 'pt')).map(x => [x.id, `${x.name} (${qtyTxt(x.qty, x.unit)})`]));
   const lineRow = l => {
@@ -1864,15 +1886,16 @@ function confirmDlg(title, msg, label, fn){
 /* ---------- formulários ---------- */
 function spoolForm(s){
   const isNew = !s; s = s ? cp(s) : {id:uid(), material:'PLA', color:'', hex:'#2B2B2B', brand:'', diameter:'1.75', weight:1000, remaining:1000, tare:200, price:20, bought:today(), location:''};
-  const mats = Object.keys(settings().matPrices).concat('Outro');
+  const mats = baseTypes();
   openDlg(isNew ? 'Nova bobine' : 'Editar bobine', `
     <div class="row">${F('sp-mat', 'Material', sel('sp-mat', mats.map(m => [m, m]), s.material))}${F('sp-brand', 'Marca', inp('sp-brand', s.brand))}${F('sp-diam', 'Diâmetro (mm)', sel('sp-diam', [['1.75', '1,75'], ['2.85', '2,85']], s.diameter))}</div>
     <div class="row">${F('sp-color', 'Cor', inp('sp-color', s.color, 'text', 'placeholder="ex.: Preto mate" required'))}${F('sp-hex', 'Amostra de cor', inp('sp-hex', s.hex, 'color', 'style="height:40px;padding:4px"'))}${F('sp-loc', 'Localização', inp('sp-loc', s.location, 'text', 'placeholder="ex.: Caixa seca A"'))}</div>
     <div class="row">${F('sp-weight', 'Peso líquido (g)', inp('sp-weight', s.weight, 'number', 'min="1" step="1"'))}${F('sp-rem', 'Restante (g)', inp('sp-rem', s.remaining, 'number', 'step="1"'))}${F('sp-tare', 'Peso da bobine vazia (g)', inp('sp-tare', s.tare, 'number', 'min="0" step="1"'), '')}</div>
+    <div class="row">${F('sp-lib', 'Material da biblioteca (preço nos orçamentos)', sel('sp-lib', [['', `Automático (${esc((libFind(s.material) || {name:'primeiro do mesmo tipo'}).name)})`]].concat(libMats().map(m => [m.id, `${m.name} · ${eur(m.eurKg)}/kg`])), s.matId || ''))}</div>
     <div class="row">${F('sp-price', 'Preço pago (€)', inp('sp-price', s.price, 'number', 'min="0" step="0.01"'))}${F('sp-bought', 'Data de compra', inp('sp-bought', s.bought, 'date'))}</div>`,
   {handler: async () => {
     if (!val('sp-color').trim()){ toast('Indique a cor da bobine.'); return; }
-    Object.assign(s, {material:val('sp-mat'), brand:val('sp-brand').trim(), diameter:val('sp-diam'), color:val('sp-color').trim(), hex:val('sp-hex'), location:val('sp-loc').trim(),
+    Object.assign(s, {matId:val('sp-lib'), material:val('sp-mat'), brand:val('sp-brand').trim(), diameter:val('sp-diam'), color:val('sp-color').trim(), hex:val('sp-hex'), location:val('sp-loc').trim(),
       weight:numv('sp-weight'), remaining:numv('sp-rem'), tare:numv('sp-tare'), price:numv('sp-price'), bought:val('sp-bought')});
     await put('spools', s); closeDlg(); toast(isNew ? 'Bobine adicionada.' : 'Bobine atualizada.');
   }});
@@ -2298,17 +2321,21 @@ function nextQuoteNumber(){
   return `ORC-${y}-${String((n.length ? Math.max(...n) : 0) + 1).padStart(3, '0')}`;
 }
 function matOptions(){
-  const sp = S.spools.filter(s => spoolRemain(s) > 0).map(s => ['s:' + s.id, `${spoolLabel(s)} · ${eur(spoolEurKg(s))}/kg`]);
-  const gen = Object.entries(settings().matPrices).map(([k, v]) => ['m:' + k, `${k} genérico · ${eur(v)}/kg`]);
+  const sp = S.spools.filter(s => spoolRemain(s) > 0).map(s => { const m = spoolLib(s); return ['s:' + s.id, `${spoolLabel(s)}${m ? ` · ${m.name} ${eur(m.eurKg)}/kg` : ''}`]; });
+  const gen = libMats().map(m => ['m:' + m.id, `${m.name} (sem bobine) · ${eur(m.eurKg)}/kg`]);
   return sp.concat(gen);
 }
-const genericOptions = () => Object.entries(settings().matPrices).map(([k, v]) => ['m:' + k, `${k} · ${eur(v)}/kg`]);
+const genericOptions = () => libMats().map(m => ['m:' + m.id, `${m.name} · ${eur(m.eurKg)}/kg`]);
+const firstMat = () => 'm:' + ((libMats()[0] || {}).id || 'PLA');
+// tipo lido do G-code → material da biblioteca (nome igual, depois tipo)
 function matchType(type){
-  const T = (type || '').toUpperCase(), mats = Object.keys(settings().matPrices);
-  const base = T && (mats.find(m => m.toUpperCase() === T) || mats.find(m => T.startsWith(m.toUpperCase())) || mats.find(m => T.includes(m.toUpperCase())));
-  return base ? 'm:' + base : 'm:' + (mats[0] || 'PLA');
+  const L = libMats(), T = (type || '').toUpperCase(), up = x => (x || '').toUpperCase();
+  const m = T && (L.find(x => up(x.name) === T) || L.find(x => up(x.type) === T) || L.find(x => x.type && T.startsWith(up(x.type))) || L.find(x => x.type && T.includes(up(x.type))));
+  return m ? 'm:' + m.id : firstMat();
 }
-const matType = code => !code ? '' : code.startsWith('m:') ? code.slice(2) : ((S.spools.find(s => s.id === code.slice(2)) || {}).material || '');
+// filamentos de uma peça só com materiais da biblioteca (converte bobines antigas no material delas)
+const libFils = fs => fs.map(f => { if (!f.mat || !f.mat.startsWith('s:')) return f; const sp = S.spools.find(x => x.id === f.mat.slice(2)), m = spoolLib(sp); return {...f, mat:m ? 'm:' + m.id : firstMat(), hex:f.hex || (sp ? sp.hex : '')}; });
+const matType = code => !code ? '' : code.startsWith('m:') ? ((libFind(code.slice(2)) || {}).type || code.slice(2)) : ((S.spools.find(s => s.id === code.slice(2)) || {}).material || '');
 const hmInputs = (pre, hours, label = 'Tempo de impressão') => { const H = Math.floor(hours || 0), M = Math.round(((hours || 0) - H) * 60); return F(pre + '-h', `${label}: horas`, inp(pre + '-h', M === 60 ? H + 1 : H, 'number', 'min="0" step="1"')) + F(pre + '-m', 'minutos', inp(pre + '-m', M === 60 ? 0 : M, 'number', 'min="0" max="59" step="1"')); };
 const readHM = pre => r2(numv(pre + '-h') + numv(pre + '-m') / 60);
 const setHM = (pre, h) => { const H = Math.floor(h), M = Math.round((h - H) * 60); $('#' + pre + '-h').value = M === 60 ? H + 1 : H; $('#' + pre + '-m').value = M === 60 ? 0 : M; };
@@ -2330,7 +2357,7 @@ function filOpts(pre, f){
     if (f.spoolId && !o.some(x => x[0] === f.spoolId)) o.push([f.spoolId, matLabel('s:' + f.spoolId)]);
     return o;
   }
-  const o = genericOptions().concat(S.spools.map(x => ['s:' + x.id, `Bobine: ${spoolLabel(x)}`]));
+  const o = genericOptions();
   if (f.mat && !o.some(x => x[0] === f.mat)) o.unshift([f.mat, matLabel(f.mat)]);
   return o;
 }
@@ -2365,7 +2392,7 @@ function filsUpdated(pre){
 function filAdd(pre){
   const rows = document.querySelectorAll(`#${pre}-fils .filrow`); if (rows.length >= MAXF){ toast(`Cada peça pode ter no máximo ${MAXF} filamentos.`); return; }
   const last = readFils(pre).slice(-1)[0];
-  const f = FILED[pre].kind === 'spool' ? {spoolId:'', mat:last ? last.mat : '', grams:0} : {mat:last ? last.mat : 'm:' + (Object.keys(settings().matPrices)[0] || 'PLA'), grams:0};
+  const f = FILED[pre].kind === 'spool' ? {spoolId:'', mat:last ? last.mat : '', grams:0} : {mat:last ? last.mat : firstMat(), grams:0};
   const w = document.createElement('div'); w.innerHTML = filRow(pre, f, rows.length); $(`#${pre}-fils`).append(w.firstElementChild);
   filsUpdated(pre); onInput && onInput();
 }
@@ -2410,11 +2437,12 @@ function clientForm(c, after){
 /* ---------- peças ---------- */
 function partPrice(p){
   const s = settings();
-  return calcQuote({printerId:(S.printers[0] || {}).id, failure:s.failure, margin:s.margin, laborRate:s.labor, items:[{...(isArt(p) ? expandArt(p) : p), qty:1, disc:0}]}).net;
+  return calcQuote({priceRef:'lib', printerId:(S.printers[0] || {}).id, failure:s.failure, margin:s.margin, laborRate:s.labor, items:[{...(isArt(p) ? expandArt(p) : p), qty:1, disc:0}]}).net;
 }
 function partForm(p, opts = {}){
   const isNew = !p, s = settings();
-  p = p ? cp(p) : {id:uid(), name:'', ref:'', clientId:opts.clientId || '', fils:[{mat:'m:' + (Object.keys(s.matPrices)[0] || 'PLA'), grams:0, hex:''}], hours:0, laborH:0, notes:'', src:null, thumb:''};
+  if (p){ p = cp(p); p.fils = libFils(filsOf(p)); }
+  p = p ? cp(p) : {id:uid(), name:'', ref:'', clientId:opts.clientId || '', fils:[{mat:firstMat(), grams:0, hex:''}], hours:0, laborH:0, notes:'', src:null, thumb:''};
   const srcBox = () => p.src ? `${thumbImg(p.thumb, 56)}<span>Dados do ficheiro <b>${esc(p.src.file)}</b><br>${esc(srcLine(p.src))}${p.src.estimated ? ' · peso calculado pelo comprimento' : ''}</span>` : '';
   openDlg(isNew ? 'Nova peça' : 'Editar peça', `
     ${dropZone(false, 'Preenche o filamento, o tempo e o material a partir do ficheiro do slicer (.gcode ou .gcode.3mf).')}
@@ -2465,7 +2493,7 @@ function artigoForm(p, opts = {}){
   {wide:true, input: () => {
     $('#ar-fixed-w').hidden = val('ar-pmode') !== 'fixed';
     const n = read(), e = expandArt(n), t = artTotals(e), L = (l, v, cls = '') => `<div class="l ${cls}"><span>${l}</span><span>${v}</span></div>`;
-    const c = calcQuote({printerId:(S.printers[0] || {}).id, failure:s.failure, margin:s.margin, laborRate:s.labor, items:[{...e, qty:1, disc:0}]}), l = c.lines[0];
+    const c = calcQuote({priceRef:'lib', printerId:(S.printers[0] || {}).id, failure:s.failure, margin:s.margin, laborRate:s.labor, items:[{...e, qty:1, disc:0}]}), l = c.lines[0];
     const print = l.material + l.purge + l.energy + l.machine + l.failure + e.comps.reduce((a, x) => a + stockCostOf(x.mats) * x.qty, 0);
     const smin = stepsMin(e) + e.comps.reduce((a, x) => a + (stepsMin(x) + (+x.laborH || 0) * 60) * x.qty, 0);
     $('#ar-sum').innerHTML = `<div class="eyebrow">Por artigo (margens das Definições, sem IVA)</div>
@@ -2505,7 +2533,7 @@ function importPartsDlg(){
 const clientName = o => (S.clients.find(c => c.id === o.clientId) || {}).name || o.client || '';
 function quoteForm(q, opts = {}){
   const s = settings(), isNew = !q;
-  q = q ? cp(q) : {id:uid(), number:nextQuoteNumber(), clientId:opts.clientId || '', client:'', date:today(), validity:15, deliveryDays:s.delivery, status:'rascunho', printerId:(S.printers[0] || {}).id || '', items:[], laborRate:s.labor, laborH:0, extras:0, failure:s.failure, margin:s.margin, vat:true, notes:''};
+  q = q ? cp(q) : {id:uid(), priceRef:'lib', number:nextQuoteNumber(), clientId:opts.clientId || '', client:'', date:today(), validity:15, deliveryDays:s.delivery, status:'rascunho', printerId:(S.printers[0] || {}).id || '', items:[], laborRate:s.labor, laborH:0, extras:0, failure:s.failure, margin:s.margin, vat:true, notes:''};
   if (q.laborRate == null || q.laborRate === '') q.laborRate = s.labor;
   // cópia fixa de cada peça no orçamento (para o valor não mudar sozinho se a peça for alterada)
   const snap = {}; (q.items || []).forEach(it => { snap[it.id] = cp(it); });
@@ -2533,7 +2561,7 @@ function quoteForm(q, opts = {}){
     <div class="qi-price"><span class="u"></span><b class="t"></b></div>
     <button type="button" class="btn ghost" data-act="rm-row" aria-label="Remover peça">✕</button></div>`;
   // filamentos da peça; os genéricos passam para a bobine mais parecida (material e cor) com stock
-  const partFils = (p, qty) => filsOf(p).map(f => { if (f.mat && f.mat.startsWith('m:')){ const sp = bestSpool(f.mat.slice(2), f.hex, f.grams * qty); if (sp) return {mat:'s:' + sp.id, grams:f.grams, hex:f.hex}; } return {mat:f.mat, grams:f.grams, hex:f.hex}; });
+  const partFils = (p, qty) => filsOf(p).map(f => { if (f.mat && f.mat.startsWith('m:')){ const lib = (libFind(f.mat.slice(2)) || {}).id || f.mat.slice(2); const sp = bestSpool(matType(f.mat), f.hex, f.grams * qty, lib); if (sp) return {mat:'s:' + sp.id, grams:f.grams, hex:f.hex, lib}; return {mat:f.mat, grams:f.grams, hex:f.hex, lib}; } return {mat:f.mat, grams:f.grams, hex:f.hex}; });
   const itemFromPart = (p, qty = 1) => isArt(p) ? {...expandArt(p, partFils, qty), id:uid(), qty, disc:0} : withFils({id:uid(), partId:p.id, desc:p.name, ref:p.ref || '', hours:+p.hours || 0, laborH:+p.laborH || 0, changes:+p.changes || 0, purgeG:p.purgeG ?? null, mats:cp(p.mats || []), thumb:p.thumb || '', qty, disc:0}, partFils(p, qty));
   const addItem = it => { filsOf(it).forEach(f => ensureOpt(f.mat)); snap[it.id] = it; const w = document.createElement('div'); w.innerHTML = itemRow(it); $('#q-items').append(w.firstElementChild); $('#q-empty').hidden = true; };
   quoteForm.addPart = (pid, qty) => { const p = S.parts.find(x => x.id === pid); if (p){ addItem(itemFromPart(p, qty)); onInput && onInput(); } };
@@ -2553,7 +2581,7 @@ function quoteForm(q, opts = {}){
     const cid = val('q-client');
     return {...q, number:val('q-number').trim(), clientId:cid === '__new' || cid === '__legacy' ? '' : cid, client:cid === '__new' ? val('qc-name').trim() : cid === '__legacy' ? q.client : clientName({clientId:cid}), date:val('q-date'), validity:numv('q-validity'), deliveryDays:Math.round(numv('q-delivery')), payAdj:Math.min(100, Math.max(0, numv('q-adj'))), status:val('q-status'), printerId:val('q-printer'),
       laborRate:numv('q-rate'), laborH:numv('q-labor'), extras:numv('q-extras'), failure:numv('q-failure'), margin:numv('q-margin'), vat:$('#q-vat').checked, notes:val('q-notes').trim(),
-      items:[...document.querySelectorAll('#q-items .qitem')].map(r => { const id = r.dataset.id; if (isArt(snap[id])) return {...snap[id], id, qty:Math.max(1, Math.round(numv('i-q-' + id))), disc:Math.min(100, Math.max(0, numv('i-x-' + id)))}; const fl = filsOf(snap[id]).map((f, k) => { const m = val(`i-m-${id}-${k}`) || f.mat; return {mat:m, grams:f.grams, hex:f.hex}; }); return withFils({...snap[id], id, qty:Math.max(1, Math.round(numv('i-q-' + id))), disc:Math.min(100, Math.max(0, numv('i-x-' + id)))}, fl); })};
+      items:[...document.querySelectorAll('#q-items .qitem')].map(r => { const id = r.dataset.id; if (isArt(snap[id])) return {...snap[id], id, qty:Math.max(1, Math.round(numv('i-q-' + id))), disc:Math.min(100, Math.max(0, numv('i-x-' + id)))}; const fl = filsOf(snap[id]).map((f, k) => { const m = val(`i-m-${id}-${k}`) || f.mat; return {mat:m, grams:f.grams, hex:f.hex, ...(f.lib ? {lib:f.lib} : {})}; }); return withFils({...snap[id], id, qty:Math.max(1, Math.round(numv('i-q-' + id))), disc:Math.min(100, Math.max(0, numv('i-x-' + id)))}, fl); })};
   };
   quoteForm.read = read;
   quoteForm.save = () => onSubmit && onSubmit();
@@ -2700,6 +2728,11 @@ document.addEventListener('click', async e => {
       case 'compact': await compactQueue(id); break;
       case 'logout': await signOut(); break;
       case 'backup-export': await exportBackup(); break;
+      case 'lib-add': { const w = document.createElement('div'); w.innerHTML = libRow({type:'PLA', eurKg:20}); const r = w.firstElementChild; $('#lib-rows').append(r); r.querySelector('input').focus(); break; }
+      case 'lib-rm': { const r = b.closest('.lib-row'), id = r.dataset.r, used = S.parts.filter(p => filsOf(p).some(f => f.mat === 'm:' + id));
+        if (used.length){ toast(`Este material é usado em ${used.length} peça${used.length === 1 ? '' : 's'} (${used.slice(0, 3).map(p => p.name).join(', ')}${used.length > 3 ? '…' : ''}). Mude-as primeiro.`); break; }
+        if (document.querySelectorAll('#lib-rows .lib-row').length <= 1){ toast('A biblioteca precisa de pelo menos um material.'); break; }
+        r.remove(); toast('Material removido. Carregue em Guardar definições.'); break; }
       case 'bm-save': if (await bmSave()) toast('Cópia por email guardada.'); break;
       case 'bm-test': await bmTest(); break;
       case 'team-invite': case 'team-uninvite': case 'team-rm': await teamAction(a, id); break;
@@ -2792,9 +2825,12 @@ document.addEventListener('submit', async e => {
   e.preventDefault();
   if (e.target.id === 'dlg-form' && onSubmit){ try{ await onSubmit(); }catch(err){} }
   if (e.target.id === 'settings-form'){
-    const s = settings(), mp = {};
-    document.querySelectorAll('[data-mat]').forEach(i => mp[i.dataset.mat] = parseFloat(i.value) || 0);
-    try{ await putSettings({...s, company:val('s-company').trim() || 'Oficina 3D', kwh:numv('s-kwh'), labor:numv('s-labor'), margin:numv('s-margin'), failure:numv('s-failure'), vat:numv('s-vat'), low:numv('s-low'), delivery:numv('s-delivery'), payAdj:Math.min(100, Math.max(0, numv('s-payadj'))), purgeG:numv('s-purge'), packs:readStock('sp'), shopOn:$('#s-shopon').checked, shopDays:[0,1,2,3,4,5,6].filter(d => $('#s-day-' + d).checked), shopStart:val('s-shopa') || '09:00', shopEnd:val('s-shopb') || '19:00', matPrices:mp, cNif:val('s-nif').trim(), cPhone:val('s-phone').trim(), cEmail:val('s-email').trim(), cWeb:val('s-web').trim(), cAddress:val('s-address').trim(), cIban:val('s-iban').trim(), pdfColor:val('s-color') || '#0A7470', cond:val('s-cond').trim(), logo:st.logo !== undefined ? st.logo : (s.logo || '')}); st.logo = undefined; toast('Definições guardadas.'); }catch(err){}
+    const s = settings(), lib = readLib();
+    if (!lib.length){ toast('A biblioteca precisa de pelo menos um material.'); return; }
+    if (lib.some(m => !m.name)){ toast('Dê um nome a cada material da biblioteca.'); return; }
+    if (new Set(lib.map(m => m.name.toUpperCase())).size < lib.length){ toast('Há dois materiais com o mesmo nome na biblioteca.'); return; }
+    const mp = {...s.matPrices}; lib.forEach(m => { if (m.id === m.type) mp[m.type] = m.eurKg; });
+    try{ await putSettings({...s, company:val('s-company').trim() || 'Oficina 3D', kwh:numv('s-kwh'), labor:numv('s-labor'), margin:numv('s-margin'), failure:numv('s-failure'), vat:numv('s-vat'), low:numv('s-low'), delivery:numv('s-delivery'), payAdj:Math.min(100, Math.max(0, numv('s-payadj'))), purgeG:numv('s-purge'), packs:readStock('sp'), shopOn:$('#s-shopon').checked, shopDays:[0,1,2,3,4,5,6].filter(d => $('#s-day-' + d).checked), shopStart:val('s-shopa') || '09:00', shopEnd:val('s-shopb') || '19:00', matPrices:mp, materials:lib, cNif:val('s-nif').trim(), cPhone:val('s-phone').trim(), cEmail:val('s-email').trim(), cWeb:val('s-web').trim(), cAddress:val('s-address').trim(), cIban:val('s-iban').trim(), pdfColor:val('s-color') || '#0A7470', cond:val('s-cond').trim(), logo:st.logo !== undefined ? st.logo : (s.logo || '')}); st.logo = undefined; toast('Definições guardadas.'); }catch(err){}
   }
 });
 document.addEventListener('input', e => {
