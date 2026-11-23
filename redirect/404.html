@@ -7,13 +7,19 @@
 <meta name="robots" content="noindex">
 <script>
 // A aplicação mudou para https://gestao.serras3d.pt — mantém o #… (etiquetas QR, links de orçamentos)
+// Enquanto o domínio novo não responder, usa o endereço do Cloudflare (serras3d-gestao.pages.dev).
 (function(){
-  var novo = 'https://gestao.serras3d.pt/' + location.search + location.hash;
+  var resto = location.search + location.hash, feito = false;
+  var ir = function(base){ if (feito) return; feito = true; location.replace(base + resto); };
   if ('serviceWorker' in navigator) navigator.serviceWorker.getRegistrations().then(function(rs){ rs.forEach(function(r){ r.unregister(); }); }).catch(function(){});
-  location.replace(novo);
+  var img = new Image();
+  img.onload = function(){ ir('https://gestao.serras3d.pt/'); };
+  img.onerror = function(){ ir('https://serras3d-gestao.pages.dev/'); };
+  setTimeout(function(){ ir('https://serras3d-gestao.pages.dev/'); }, 4000);
+  img.src = 'https://gestao.serras3d.pt/icons/favicon-32.png?t=' + Date.now();
 })();
 </script>
-<meta http-equiv="refresh" content="2;url=https://gestao.serras3d.pt/">
+<meta http-equiv="refresh" content="6;url=https://serras3d-gestao.pages.dev/">
 <style>
 body{margin:0;min-height:100vh;display:grid;place-items:center;background:#0b0c0f;color:#f3f1ec;font:16px/1.5 system-ui,sans-serif;padding:24px}
 a{color:#f4b04a}
