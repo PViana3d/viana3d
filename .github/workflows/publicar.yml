@@ -1,8 +1,13 @@
-name: Publicar
+name: Reencaminhar endereço antigo
+
+# A aplicação é publicada pelo Cloudflare Pages em https://gestao.serras3d.pt (projeto serras3d-gestao).
+# O GitHub Pages (https://pviana3d.github.io/viana3d/) fica só a reencaminhar para lá, mantendo o #…
+# para as etiquetas QR e os links de orçamentos antigos continuarem a funcionar.
 
 on:
   push:
     branches: [main]
+    paths: ['redirect/**', '.github/workflows/publicar.yml']
   workflow_dispatch:
 
 permissions:
@@ -19,18 +24,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-      - run: npm install --no-audit --no-fund
-      - run: node scripts/build.mjs
-        env:
-          SUPABASE_URL: ${{ vars.SUPABASE_URL }}
-          SUPABASE_ANON_KEY: ${{ vars.SUPABASE_ANON_KEY }}
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: dist
+          path: redirect
 
   deploy:
     needs: build

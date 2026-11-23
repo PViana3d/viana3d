@@ -2,8 +2,9 @@
 
 Aplicação para gerir uma oficina de impressão 3D: orçamentos (com PDF para o cliente), encomendas, planeamento de produção, registo de impressões, catálogo de peças, clientes, bobines de filamento, manutenção das impressoras e relatórios.
 
-- **Endereço:** https://gestao.serras3d.pt/ (domínio próprio no GitHub Pages; o endereço antigo https://pviana3d.github.io/viana3d/ reencaminha para aqui)
-- **Domínio:** registo CNAME `gestao` → `pviana3d.github.io` no DNS de serras3d.pt (Amen); domínio configurado em *Settings → Pages → Custom domain*, com *Enforce HTTPS*.
+- **Endereço:** https://gestao.serras3d.pt/ — publicado pelo **Cloudflare Pages** (projeto `serras3d-gestao`, ligado a este repositório: cada envio para `main` publica a versão nova; comando `npm run build`, pasta `dist`, `NODE_VERSION=22`).
+- **Domínio:** registo CNAME `gestao` → `serras3d-gestao.pages.dev` no DNS de serras3d.pt (Amen); HTTPS do Cloudflare.
+- **Endereço antigo:** https://pviana3d.github.io/viana3d/ (GitHub Pages) só reencaminha para o novo, mantendo o `#…` (pasta `redirect/`, workflow *Reencaminhar endereço antigo*).
 - **Dados:** Supabase, projeto `viana3d` (região Paris). Cada empresa tem os seus dados; a equipa partilha-os em tempo real.
 - **Windows e Android:** é uma aplicação web instalável (PWA). Atualiza-se sozinha sempre que há uma versão nova.
 
