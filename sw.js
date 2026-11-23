@@ -7,7 +7,7 @@ const ASSETS = [
   './', 'index.html', 'manifest.webmanifest',
   'styles.css?v=' + VERSION, 'app.js?v=' + VERSION, 'config.js?v=' + VERSION,
   'vendor/supabase.js?v=' + VERSION, 'vendor/jszip.min.js?v=' + VERSION, 'vendor/jspdf.umd.min.js', 'vendor/qrcode.js',
-  'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png'
+  'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png', 'icons/favicon.svg', 'icons/favicon-32.png'
 ];
 
 self.addEventListener('install', e => {

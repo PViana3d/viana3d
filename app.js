@@ -18,7 +18,7 @@ const DEF = {company:'Oficina 3D', kwh:0.16, labor:15, margin:40, failure:10, va
   purgeG:1, packs:[],
   shopOn:true, shopDays:[1,2,3,4,5], shopStart:'09:00', shopEnd:'19:00',
   matPrices:{PLA:20, PETG:22, ABS:22, ASA:28, TPU:30, Resina:35},
-  cNif:'', cAddress:'', cPhone:'', cEmail:'', cWeb:'', cIban:'', logo:'', pdfColor:'#0A7470',
+  cNif:'', cAddress:'', cPhone:'', cEmail:'', cWeb:'', cIban:'', logo:'', pdfColor:'#B26A12',
   cond:'Preços em euros. Portes de envio não incluídos, salvo indicação em contrário.'};
 const COLS = ['spools','printers','maint','jobs','quotes','clients','parts','orders','plan','purchases','stock'];
 const S = {spools:[], printers:[], maint:[], jobs:[], quotes:[], clients:[], parts:[], orders:[], plan:[], purchases:[], stock:[], settings:cp(DEF)};
@@ -227,7 +227,7 @@ function showAuth(mode = 'login', msg = ''){
   box.hidden = false; $('#app').hidden = true;
   const title = {login:'Entrar', signup:'Criar conta', reset:'Recuperar palavra-passe', newpass:'Nova palavra-passe'}[mode];
   box.innerHTML = `<form class="auth-card" id="auth-form" data-mode="${mode}" novalidate>
-    <div class="auth-brand"><img src="icons/icon-192.png" alt="" width="48" height="48"><div><b>Gestão Impressão 3D</b><small>Orçamentos, encomendas e produção</small></div></div>
+    <div class="auth-brand"><span class="logo-tile"><svg class="logo-sym" viewBox="0 0 120 100" width="34" height="28" aria-hidden="true"><defs><clipPath id="auth-sym"><path d="M0 100 L40 26 L55 50 L74 12 L120 100 Z"></path></clipPath></defs><g clip-path="url(#auth-sym)" fill="#f4b04a"><rect x="0" y="12" width="120" height="5"></rect><rect x="0" y="20" width="120" height="5"></rect><rect x="0" y="28" width="120" height="5"></rect><rect x="0" y="36" width="120" height="5"></rect><rect x="0" y="44" width="120" height="5"></rect><rect x="0" y="52" width="120" height="5"></rect><rect x="0" y="60" width="120" height="5"></rect><rect x="0" y="68" width="120" height="5"></rect><rect x="0" y="76" width="120" height="5"></rect><rect x="0" y="84" width="120" height="5"></rect><rect x="0" y="92" width="120" height="5"></rect></g></svg></span><div><b>Serras<span>3D</span></b><small>Gestão · orçamentos, encomendas e produção</small></div></div>
     <h1>${title}</h1>
     ${msg ? `<p class="auth-msg">${esc(msg)}</p>` : ''}
     ${mode !== 'newpass' ? `<div class="field"><label for="a-email">Email</label><input id="a-email" type="email" autocomplete="email" required></div>` : ''}
@@ -589,7 +589,6 @@ function renderNav(){
   const v = current(), a = loaded ? alerts() : [];
   const cnt = {bobines: a.filter(x => x.href === '#bobines').length, manutencao: a.filter(x => x.href === '#manutencao').length, encomendas: a.filter(x => x.href === '#encomendas' && x.cls !== 'info').length, producao: a.filter(x => x.href === '#producao').length, compras: a.filter(x => x.href === '#compras' && x.cls !== 'info').length, definicoes: a.filter(x => x.href === '#definicoes' && x.cls !== 'info').length};
   $('#nav').innerHTML = VIEWS.map(([k, l]) => `<a href="#${k}" ${k === v ? 'aria-current="page"' : ''}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${ICONS[k]}</svg>${l}${cnt[k] ? `<span class="count">${cnt[k]}</span>` : ''}</a>`).join('');
-  $('#brandName').textContent = settings().company || 'Oficina 3D';
   $('#storeNote').innerHTML = ME ? `<span class="who">${esc(ME.email)}</span><span class="conn ${online ? 'on' : 'off'}">${online ? 'Ligado' : 'Sem ligação'}</span><button type="button" class="linkbtn2" data-act="logout">Terminar sessão</button>` : '';
 }
 
