@@ -6,7 +6,9 @@ const out = 'dist';
 rmSync(out, {recursive: true, force: true});
 mkdirSync(`${out}/vendor`, {recursive: true});
 
-let build = process.env.GITHUB_SHA ? process.env.GITHUB_SHA.slice(0, 8) : '';
+// GitHub Actions ou Cloudflare Pages dão o commit; localmente usa-se o git
+const sha = process.env.GITHUB_SHA || process.env.CF_PAGES_COMMIT_SHA || '';
+let build = sha ? sha.slice(0, 8) : '';
 if (!build) { try { build = execSync('git rev-parse --short HEAD').toString().trim(); } catch { build = Date.now().toString(36); } }
 
 for (const f of ['app.js', 'styles.css', 'manifest.webmanifest', 'config.js']) cpSync(f, `${out}/${f}`);
@@ -30,4 +32,19 @@ if (url && key) {
   console.log('config.js gerado a partir das variáveis do GitHub.');
 }
 writeFileSync(`${out}/.nojekyll`, '');
+// Cloudflare Pages: a página, o service worker e a configuração nunca ficam em cache (as atualizações chegam logo)
+writeFileSync(`${out}/_headers`, `/
+  Cache-Control: no-cache
+/index.html
+  Cache-Control: no-cache
+/sw.js
+  Cache-Control: no-cache
+/config.js
+  Cache-Control: no-cache
+/manifest.webmanifest
+  Cache-Control: no-cache
+/*
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin
+`);
 console.log(`Pronto: ${out}/ (versão ${build})`);
