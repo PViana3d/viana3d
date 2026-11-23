@@ -52,6 +52,7 @@ function dbErr(error){
 }
 async function put(col, obj){
   obj = cp(obj);
+  if (col === 'spools' && !obj.serial) obj.serial = nextSerial();
   applyRow(col, obj.id, obj); saveCache(); scheduleRender();
   const {error} = await sb.from('docs').upsert({workspace_id:WS, collection:col, id:obj.id, data:obj});
   if (error){ await refetch(); dbErr(error); }
@@ -60,6 +61,21 @@ async function del(col, id){
   applyRow(col, id, null); saveCache(); scheduleRender();
   const {error} = await sb.from('docs').delete().match({workspace_id:WS, collection:col, id});
   if (error){ await refetch(); dbErr(error); }
+}
+/* número de série das bobines: B0001, B0002… nunca se repete (o maior já usado fica nas definições) */
+let serialMax = 0;
+const serialNum = x => { const m = /^B(\d+)$/i.exec(String(x || '').trim()); return m ? +m[1] : 0; };
+function nextSerial(){
+  serialMax = Math.max(serialMax, +(S.settings.serialMax || 0), ...S.spools.map(x => serialNum(x.serial)), 0) + 1;
+  const n = serialMax; setTimeout(() => { if (+(S.settings.serialMax || 0) < n) putSettings({...S.settings, serialMax:n}); }, 300);
+  return 'B' + String(n).padStart(4, '0');
+}
+// bobines antigas sem número: numerar pela data de compra (uma vez, depois de carregar)
+let serialsChecked = false;
+async function assignSerials(){
+  if (serialsChecked || !loaded) return; serialsChecked = true;
+  const miss = S.spools.filter(x => !x.serial).sort((a, b) => (a.bought || '').localeCompare(b.bought || '') || String(a.id).localeCompare(String(b.id)));
+  for (const x of miss) await put('spools', x);
 }
 async function putSettings(s){ await put('config', {...cp(s), id:'settings'}); }
 const settings = () => { const mp = {...DEF.matPrices, ...(S.settings.matPrices || {})};
@@ -283,7 +299,7 @@ async function runSession(){
     WS = data.workspace_id; ROLE = data.role || 'membro';
     localStorage.setItem('g3d-ws-' + ME.id, WS);
     if (!loaded) loadCache();
-    await refetch(); loaded = true; subscribe(); render();
+    await refetch(); loaded = true; subscribe(); render(); setTimeout(assignSerials, 500);
   }catch(err){
     if (loaded){ online = false; render(); toast('Sem ligação: a mostrar os dados guardados neste aparelho.'); }
     else { $('#view').innerHTML = `<div class="empty"><b>Não foi possível ligar ao servidor.</b><span>${esc(err.message || '')}</span><button class="btn" onclick="location.reload()">Tentar de novo</button></div>`; }
@@ -647,7 +663,7 @@ function vSpools(){
   const stockVal = S.spools.reduce((a, s) => a + spoolRemain(s) / 1000 * spoolEurKg(s), 0);
   const chip = (k, v, l) => `<button class="chip" data-act="filter" data-k="${k}" data-v="${esc(v)}" aria-pressed="${st[k] === v}">${esc(l)}</button>`;
   return `<div class="head"><div><div class="eyebrow">Controlo de filamento</div><h1>Bobines</h1><p><span class="num">${num(stockKg, 2)} kg</span> em stock · valor <span class="num">${eur(stockVal)}</span> · ${S.spools.length} bobines</p></div>
-    <div class="actions">${S.spools.length ? '<button class="btn" data-act="labels">Etiquetas QR</button>' : ''}<button class="btn primary" data-act="new-spool">Nova bobine</button></div></div>
+    <div class="actions">${S.spools.length ? `<button class="btn" data-act="scan-spool">${SCAN_ICON} Ler código</button><button class="btn" data-act="labels">Etiquetas</button>` : ''}<button class="btn primary" data-act="new-spool">Nova bobine</button></div></div>
     <div class="chips">${chip('spoolMat', '', 'Todos os materiais')}${mats.map(m => chip('spoolMat', m, m)).join('')}
       <span style="width:12px"></span>${chip('spoolStatus', '', 'Todas')}${chip('spoolStatus', 'warn', 'Stock baixo')}${chip('spoolStatus', 'bad', 'Esgotadas')}</div>
     ${list.length ? `<div class="grid">${list.map(spoolCard).join('')}</div>` : `<div class="empty">${S.spools.length ? 'Nenhuma bobine com estes filtros.' : 'Ainda não registou bobines.'}<button class="btn" data-act="new-spool">Adicionar bobine</button></div>`}`;
@@ -658,7 +674,7 @@ function spoolCard(s){
   return `<article class="spool ${c === 'bad' ? 'out' : ''}">
     <div class="spool-top">
       <div class="ring"><svg viewBox="0 0 72 72"><circle cx="36" cy="36" r="30" fill="none" stroke="var(--sunk)" stroke-width="9"/><circle cx="36" cy="36" r="30" fill="none" stroke="${esc(s.hex || '#888')}" stroke-width="9" stroke-dasharray="${C * pct} ${C}"/><circle cx="36" cy="36" r="25.5" fill="none" stroke="var(--line)" stroke-width="1"/><circle cx="36" cy="36" r="34.5" fill="none" stroke="var(--line)" stroke-width="1"/></svg><span>${num(pct * 100)}%</span></div>
-      <div class="spool-id"><b>${esc(spoolLabel(s))}</b><small>${esc(s.brand || 'Sem marca')}${s.diameter ? ' · ' + esc(s.diameter) + ' mm' : ''}</small><span class="pill ${c}">${t}</span></div>
+      <div class="spool-id"><span class="serial">${esc(s.serial || '')}</span><b>${esc(spoolLabel(s))}</b><small>${esc(s.brand || 'Sem marca')}${s.diameter ? ' · ' + esc(s.diameter) + ' mm' : ''}</small><span class="pill ${c}">${t}</span></div>
     </div>
     <dl class="meta"><dt>Restante</dt><dd>${num(spoolRemain(s))} / ${num(s.weight)} g</dd>${rsv ? `<dt>Reservado</dt><dd class="${rsv > spoolRemain(s) + .5 ? 'neg-txt' : ''}">${num(rsv)} g na fila${rsv > spoolRemain(s) + .5 ? ' · não chega' : ''}</dd>` : ''}<dt>Preço</dt><dd>${eur(s.price)} · ${eur(spoolEurKg(s))}/kg</dd><dt>Comprada</dt><dd>${fmtDate(s.bought)}</dd>${s.purchaseNumber ? `<dt>Compra</dt><dd>${esc(s.purchaseNumber)}${s.supplier ? ' · ' + esc(s.supplier) : ''}</dd>` : ''}${s.location ? `<dt>Local</dt><dd>${esc(s.location)}</dd>` : ''}</dl>
     <div class="card-foot"><button class="btn ghost sm" data-act="weigh" data-id="${s.id}">Pesar</button><button class="btn ghost sm" data-act="labels" data-id="${s.id}">Etiqueta</button><button class="btn ghost sm" data-act="edit-spool" data-id="${s.id}">Editar</button><button class="btn ghost sm danger" data-act="del" data-col="spools" data-id="${s.id}">Eliminar</button></div>
@@ -1059,7 +1075,7 @@ function orderForm(o){
 function spoolOptsFor(mat, need){
   const type = matType(mat);
   const list = S.spools.filter(s => spoolRemain(s) > 0).sort((a, b) => (b.material === type) - (a.material === type) || spoolRemain(b) - spoolRemain(a));
-  return [['', 'Decidir na altura']].concat(list.map(s => ['' + s.id, `${spoolLabel(s)} — ${num(spoolRemain(s))} g${need && spoolRemain(s) < need ? ' (insuficiente)' : ''}`]));
+  return [['', 'Decidir na altura']].concat(list.map(s => ['' + s.id, `${s.serial ? s.serial + ' · ' : ''}${spoolLabel(s)} — ${num(spoolRemain(s))} g${need && spoolRemain(s) < need ? ' (insuficiente)' : ''}`]));
 }
 function defaultSpool(mat, need, hex){
   if (mat && mat.startsWith('s:') && S.spools.some(s => s.id === mat.slice(2))) return mat.slice(2);
@@ -1080,7 +1096,7 @@ function planOrderDlg(o){
       <div class="qi-name">${thumbImg(i.thumb)}<div><b>${esc(i.desc)}</b><small>${i.toPlan} un. por planear · ${filsOf(i).length > 1 ? filsOf(i).length + ' filamentos · ' : ''}${num(sumG(filsOf(i)), 1)} g · ${hm(i.hours)} por unidade</small></div></div>
       ${F('pl-per-' + i.id, 'Unid. por impressão', inp('pl-per-' + i.id, Math.min(i.toPlan, Math.max(1, Math.floor(8 / Math.max(i.hours, .1)))), 'number', `min="1" max="${i.toPlan}" step="1"`))}
       ${F('pl-pr-' + i.id, 'Impressora', sel('pl-pr-' + i.id, pOpts, o.printerId && activePrinters().some(p => p.id === o.printerId) && items.length === 1 ? o.printerId : 'auto'))}
-      <div class="field pl-fils${filsOf(i).length > 1 ? ' multi' : ''}"><label>${filsOf(i).length > 1 ? 'Bobines' : 'Bobine'}</label>${filsOf(i).map((f, k) => `<div class="qf">${swatch(matHex(f.mat) || f.hex)}${sel(`pl-sp-${i.id}-${k}`, spoolOptsFor(f.mat, f.grams * i.toPlan), defaultSpool(f.mat, f.grams * i.toPlan, f.hex))}${filsOf(i).length > 1 ? `<span class="num muted">${num(f.grams, 1)} g/un.</span>` : ''}</div>`).join('')}</div>
+      <div class="field pl-fils${filsOf(i).length > 1 ? ' multi' : ''}"><label>${filsOf(i).length > 1 ? 'Bobines' : 'Bobine'}</label>${filsOf(i).map((f, k) => `<div class="qf">${swatch(matHex(f.mat) || f.hex)}${sel(`pl-sp-${i.id}-${k}`, spoolOptsFor(f.mat, f.grams * i.toPlan), defaultSpool(f.mat, f.grams * i.toPlan, f.hex))}<button type="button" class="btn ghost sm scan-btn" data-act="scan-sel" data-sel="pl-sp-${i.id}-${k}" aria-label="Ler o código da bobine com a câmara">${SCAN_ICON}</button>${filsOf(i).length > 1 ? `<span class="num muted">${num(f.grams, 1)} g/un.</span>` : ''}</div>`).join('')}</div>
     </div>`).join('')}</div>
     <div class="sum" id="pl-out"></div>`,
   {wide:true, submit:'Criar planeamento',
@@ -1920,7 +1936,7 @@ function confirmDlg(title, msg, label, fn){
 function spoolForm(s){
   const isNew = !s; s = s ? cp(s) : {id:uid(), material:'PLA', color:'', hex:'#2B2B2B', brand:'', diameter:'1.75', weight:1000, remaining:1000, tare:200, price:20, bought:today(), location:''};
   const mats = baseTypes();
-  openDlg(isNew ? 'Nova bobine' : 'Editar bobine', `
+  openDlg(isNew ? 'Nova bobine' : `Editar bobine ${s.serial || ''}`, `
     <div class="row">${F('sp-mat', 'Material', sel('sp-mat', mats.map(m => [m, m]), s.material))}${F('sp-brand', 'Marca', inp('sp-brand', s.brand))}${F('sp-diam', 'Diâmetro (mm)', sel('sp-diam', [['1.75', '1,75'], ['2.85', '2,85']], s.diameter))}</div>
     <div class="row">${F('sp-color', 'Cor', inp('sp-color', s.color, 'text', 'placeholder="ex.: Preto mate" required'))}${F('sp-hex', 'Amostra de cor', inp('sp-hex', s.hex, 'color', 'style="height:40px;padding:4px"'))}${F('sp-loc', 'Localização', inp('sp-loc', s.location, 'text', 'placeholder="ex.: Caixa seca A"'))}</div>
     <div class="row">${F('sp-weight', 'Peso líquido (g)', inp('sp-weight', s.weight, 'number', 'min="1" step="1"'))}${F('sp-rem', 'Restante (g)', inp('sp-rem', s.remaining, 'number', 'step="1"'))}${F('sp-tare', 'Peso da bobine vazia (g)', inp('sp-tare', s.tare, 'number', 'min="0" step="1"'), '')}</div>
@@ -2020,9 +2036,64 @@ function orderLabelsPdf(jsPDF, qrcode, orders, mode, vols){
   doc.setProperties({title:pdfT('Etiquetas de encomendas'), creator:pdfT(s.company)});
   return doc;
 }
-/* ---------- etiquetas QR das bobines ---------- */
+/* ---------- leitor de códigos (câmara do telemóvel) ---------- */
+const SCAN_ICON = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3"/><path d="M7 9v6M10 9v6M13 9v6M16 9v6"/></svg>';
+function spoolFromCode(txt){
+  const t = String(txt || '').trim(), m = /#bobine=([^&\s]+)/.exec(t);
+  if (m) return S.spools.find(x => x.id === decodeURIComponent(m[1])) || null;
+  const u = t.toUpperCase().replace(/\s+/g, ''), n = /^B?0*(\d+)$/.exec(u);
+  return S.spools.find(x => (x.serial || '').toUpperCase() === u) || (n && S.spools.find(x => serialNum(x.serial) === +n[1])) || null;
+}
+// abre a câmara traseira e devolve o texto do primeiro código lido (código de barras ou QR); também aceita escrever o número
+function scanCode(title){
+  return new Promise(resolve => {
+    let d = document.getElementById('scan-dlg');
+    if (!d){ d = document.createElement('dialog'); d.id = 'scan-dlg'; d.className = 'scan-dlg'; document.body.append(d); }
+    d.innerHTML = `<div class="scan-h"><b>${esc(title)}</b><button type="button" class="btn ghost" data-x aria-label="Fechar">✕</button></div>
+      <div class="scan-v"><video playsinline muted></video><i class="scan-line"></i></div>
+      <p class="muted" id="scan-msg">A abrir a câmara…</p>
+      <form class="scan-man"><input id="scan-in" placeholder="Ou escreva o número (ex.: B0007)" autocomplete="off" autocapitalize="characters" aria-label="Número da bobine"><button class="btn">OK</button></form>`;
+    let stream = null, timer = null, done = false, busy = false;
+    const msg = t => { const e = d.querySelector('#scan-msg'); if (e) e.textContent = t; };
+    const finish = v => { if (done) return; done = true; clearInterval(timer); if (stream) stream.getTracks().forEach(t => t.stop()); if (d.open) d.close(); resolve(v); };
+    d.querySelector('[data-x]').onclick = () => finish(null);
+    d.oncancel = e => { e.preventDefault(); finish(null); };
+    d.querySelector('.scan-man').onsubmit = e => { e.preventDefault(); const v = d.querySelector('#scan-in').value.trim(); if (v) finish(v); };
+    d.showModal();
+    if (!('BarcodeDetector' in window) || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
+      d.querySelector('.scan-v').hidden = true; msg('Este navegador não lê códigos com a câmara (use o Chrome no Android). Escreva o número da etiqueta.'); d.querySelector('#scan-in').focus(); return;
+    }
+    (async () => {
+      try{
+        const sup = await BarcodeDetector.getSupportedFormats().catch(() => []), formats = ['code_128', 'qr_code'].filter(f => !sup.length || sup.includes(f));
+        const det = new BarcodeDetector({formats});
+        stream = await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:'environment'}, width:{ideal:1280}}, audio:false});
+        if (done){ stream.getTracks().forEach(t => t.stop()); return; }
+        const v = d.querySelector('video'); v.srcObject = stream; await v.play();
+        msg('Aponte a câmara para o código de barras da etiqueta.');
+        timer = setInterval(async () => {
+          if (busy || done || v.readyState < 2) return; busy = true;
+          try{ const r = await det.detect(v); if (r.length && r[0].rawValue){ if (navigator.vibrate) navigator.vibrate(60); finish(r[0].rawValue); } }catch(e){}
+          busy = false;
+        }, 200);
+      }catch(e){ d.querySelector('.scan-v').hidden = true; msg('Não foi possível usar a câmara (autorize o acesso à câmara no navegador). Pode escrever o número da etiqueta.'); }
+    })();
+  });
+}
+async function ensureBarcode(){
+  if (window.JsBarcode) return window.JsBarcode;
+  await loadScript('vendor/jsbarcode-code128.js'); if (!window.JsBarcode) throw new Error('barcode'); return window.JsBarcode;
+}
+// Code 128 com zona de silêncio de 10 módulos de cada lado
+function drawBarcode(doc, text, x, y, w, h){
+  const o = {}; window.JsBarcode(o, text, {format:'CODE128'});
+  const bits = o.encodings.map(e => e.data).join(''), m = w / (bits.length + 20);
+  doc.setFillColor(0, 0, 0);
+  let i = 0; while (i < bits.length){ if (bits[i] !== '1'){ i++; continue; } let e = i; while (e < bits.length && bits[e] === '1') e++; doc.rect(x + (10 + i) * m, y, (e - i) * m, h, 'F'); i = e; }
+}
+/* ---------- etiquetas das bobines ---------- */
 const spoolUrl = s => location.origin + location.pathname + '#bobine=' + encodeURIComponent(s.id);
-const spoolCode = s => String(s.id).slice(-6).toUpperCase();
+const spoolCode = s => s.serial || String(s.id).slice(-6).toUpperCase();
 async function ensureQR(){
   if (window.qrcode) return window.qrcode;
   await loadScript('vendor/qrcode.js'); if (!window.qrcode) throw new Error('qrcode'); return window.qrcode;
@@ -2030,23 +2101,26 @@ async function ensureQR(){
 function spoolDlg(s){
   const rsv = reservations().sp[s.id] || 0, [t, c] = spoolStatus(s);
   const jobs = S.jobs.filter(j => usesOf(j).some(u => u.spoolId === s.id)).sort((a, b) => (b.date || '').localeCompare(a.date || '')).slice(0, 5);
-  openDlg(spoolLabel(s), `<div class="spool-q">${swatch(s.hex)}<div><b>${esc(s.brand || 'Sem marca')}</b> · ${esc(s.material)}${s.diameter ? ' · ' + esc(s.diameter) + ' mm' : ''} <span class="pill ${c}">${t}</span><small class="muted mono">Código ${esc(spoolCode(s))}</small></div></div>
+  openDlg(`${s.serial ? s.serial + ' · ' : ''}${spoolLabel(s)}`, `<div class="spool-q">${swatch(s.hex)}<div><b>${esc(s.brand || 'Sem marca')}</b> · ${esc(s.material)}${s.diameter ? ' · ' + esc(s.diameter) + ' mm' : ''} <span class="pill ${c}">${t}</span><small class="muted mono">Código ${esc(spoolCode(s))}</small></div></div>
     <dl class="meta"><dt>Restante</dt><dd class="num">${num(spoolRemain(s))} / ${num(s.weight)} g</dd>${rsv ? `<dt>Reservado na fila</dt><dd class="num ${rsv > spoolRemain(s) + .5 ? 'neg-txt' : ''}">${num(rsv)} g</dd>` : ''}<dt>Preço</dt><dd>${eur(spoolEurKg(s))}/kg</dd><dt>Comprada</dt><dd>${fmtDate(s.bought)}</dd></dl>
     ${jobs.length ? `<h3>Últimas impressões</h3><ul class="alerts">${jobs.map(j => `<li><span class="pill ${j.result === 'sucesso' ? 'ok' : 'bad'}">${j.result === 'sucesso' ? 'OK' : 'Falha'}</span><div class="txt">${esc(j.name)}<small>${fmtDate(j.date)} · ${num(usesOf(j).filter(u => u.spoolId === s.id).reduce((a, u) => a + u.grams, 0))} g</small></div></li>`).join('')}</ul>` : ''}`,
   {submit:'', extra:`<div class="actions"><button type="button" class="btn" data-act="edit-spool" data-id="${s.id}">Editar</button><button type="button" class="btn primary" data-act="weigh" data-id="${s.id}">Pesar</button></div>`});
 }
 function labelsDlg(only){
   const list = [...S.spools].sort((a, b) => spoolLabel(a).localeCompare(spoolLabel(b), 'pt'));
-  openDlg('Etiquetas QR das bobines', `<p style="margin:0">Cole a etiqueta na bobine. Ao ler o código com o telemóvel abre a ficha da bobine nesta aplicação, para pesar ou ver o que resta.</p>
-    <div class="row">${F('lb-fmt', 'Formato', sel('lb-fmt', [['a4', 'Folha A4 com 21 etiquetas (63,5 × 38,1 mm)'], ['50x30', 'Rolo de etiquetas 50 × 30 mm (uma por página)']], 'a4'))}<div class="field" id="lb-skip-w">${`<label for="lb-skip">Começar na etiqueta nº</label>${inp('lb-skip', 1, 'number', 'min="1" max="21" step="1"')}<span class="hint">Para aproveitar folhas já usadas.</span>`}</div></div>
-    <div class="lb-list">${list.map(s => `<label class="check"><input type="checkbox" data-lb="${s.id}" ${only ? (s.id === only ? 'checked' : '') : spoolRemain(s) > 0 ? 'checked' : ''}> ${swatch(s.hex)} ${esc(spoolLabel(s))} <small class="muted">${esc(s.brand || '')} · ${num(spoolRemain(s))} g</small></label>`).join('')}</div>
+  openDlg('Etiquetas das bobines', `<p style="margin:0">Cada bobine tem um número de série único (ex.: B0007). Cole a etiqueta na bobine e leia o código com o botão <b>Ler código</b> da aplicação, para abrir a ficha da bobine ou escolhê-la numa impressão.</p>
+    <div class="row">${F('lb-kind', 'Código', sel('lb-kind', [['bar', 'Código de barras com o número de série'], ['qr', 'Código QR (abre a app com a câmara normal do telemóvel)']], 'bar'))}${F('lb-fmt', 'Formato', sel('lb-fmt', [['a4', 'Folha A4 com 21 etiquetas (63,5 × 38,1 mm)'], ['50x30', 'Rolo de etiquetas 50 × 30 mm (uma por página)']], 'a4'))}<div class="field" id="lb-skip-w">${`<label for="lb-skip">Começar na etiqueta nº</label>${inp('lb-skip', 1, 'number', 'min="1" max="21" step="1"')}<span class="hint">Para aproveitar folhas já usadas.</span>`}</div></div>
+    <div class="lb-list">${list.map(s => `<label class="check"><input type="checkbox" data-lb="${s.id}" ${only ? (s.id === only ? 'checked' : '') : spoolRemain(s) > 0 ? 'checked' : ''}> ${swatch(s.hex)} <b class="mono">${esc(s.serial || '')}</b> ${esc(spoolLabel(s))} <small class="muted">${esc(s.brand || '')} · ${num(spoolRemain(s))} g</small></label>`).join('')}</div>
     <p class="muted" id="lb-out" style="margin:0"></p>`,
   {wide:true, submit:'Gerar PDF', input: () => { $('#lb-skip-w').hidden = val('lb-fmt') !== 'a4'; const n = document.querySelectorAll('[data-lb]:checked').length; $('#lb-out').textContent = `${n} etiqueta${n === 1 ? '' : 's'}${val('lb-fmt') === 'a4' && n ? ` · ${Math.ceil((n + Math.max(0, numv('lb-skip') - 1)) / 21)} folha(s)` : ''}`; },
    handler: async () => {
     const ids = [...document.querySelectorAll('[data-lb]:checked')].map(i => i.dataset.lb), sel = ids.map(id => S.spools.find(x => x.id === id)).filter(Boolean);
     if (!sel.length){ toast('Escolha pelo menos uma bobine.'); return; }
-    let jsPDF, qr; try{ jsPDF = await ensureJsPDF(); qr = await ensureQR(); }catch(e){ toast('Não foi possível carregar o gerador de PDF. Verifique a ligação.'); return; }
-    const doc = labelsPdf(jsPDF, qr, sel, val('lb-fmt'), Math.min(21, Math.max(1, Math.round(numv('lb-skip')))) - 1);
+    const kind = val('lb-kind');
+    for (const x of sel.filter(x => !x.serial)) await put('spools', x);
+    sel.splice(0, sel.length, ...ids.map(id => S.spools.find(x => x.id === id)).filter(Boolean));
+    let jsPDF, qr; try{ jsPDF = await ensureJsPDF(); qr = await ensureQR(); if (kind === 'bar') await ensureBarcode(); }catch(e){ toast('Não foi possível carregar o gerador de PDF. Verifique a ligação.'); return; }
+    const doc = labelsPdf(jsPDF, qr, sel, val('lb-fmt'), Math.min(21, Math.max(1, Math.round(numv('lb-skip')))) - 1, kind);
     await downloads.save({filename:`etiquetas-bobines-${today()}.pdf`, data:doc.output('blob')}); closeDlg(); toast('PDF das etiquetas criado.');
   }});
 }
@@ -2055,7 +2129,19 @@ function drawQR(doc, qrcode, text, x, y, size){
   const n = q.getModuleCount(), m = size / (n + 4); doc.setFillColor(0, 0, 0);
   for (let r = 0; r < n; r++){ let c = 0; while (c < n){ if (!q.isDark(r, c)){ c++; continue; } let e = c; while (e < n && q.isDark(r, e)) e++; doc.rect(x + (c + 2) * m, y + (r + 2) * m, (e - c) * m, m + .02, 'F'); c = e; } }
 }
-function drawLabel(doc, qrcode, s, x, y, w, h){
+function drawBarLabel(doc, s, x, y, w, h){
+  const pad = h * .08, f = h / 38.1, bh = 10.5 * f, by = y + h - pad - bh, tw = w * .56;
+  let cy = y + pad + 3.4 * f;
+  doc.setTextColor(20); doc.setFont('helvetica', 'bold'); doc.setFontSize(11 * f); doc.text(pdfT(doc.splitTextToSize(pdfT(s.material || ''), tw)[0]), x + pad, cy); cy += 4.2 * f;
+  doc.setFontSize(8.5 * f); doc.text(pdfT(doc.splitTextToSize(pdfT(String(s.color || '').replace(/\s*\(exemplo\)/, '')), tw)[0] || ''), x + pad, cy); cy += 3.6 * f;
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(6.8 * f); doc.setTextColor(70);
+  doc.text(pdfT(doc.splitTextToSize(pdfT([s.brand, `${num(s.weight)} g`, s.diameter ? s.diameter + ' mm' : ''].filter(Boolean).join(' · ')), tw)[0] || ''), x + pad, cy);
+  const [r, g, b] = hexRgb(s.hex || '#ffffff'); doc.setFillColor(r, g, b); doc.setDrawColor(150); doc.setLineWidth(.2); doc.roundedRect(x + w - pad - 4.5 * f, y + pad, 4.5 * f, 4.5 * f, .8, .8, 'FD');
+  doc.setTextColor(10); doc.setFont('helvetica', 'bold'); doc.setFontSize(17 * f); doc.text(pdfT(s.serial || ''), x + w - pad, y + pad + 11.5 * f, {align:'right'});
+  drawBarcode(doc, s.serial || spoolCode(s), x + pad * .5, by, w - pad, bh);
+}
+function drawLabel(doc, qrcode, s, x, y, w, h, kind){
+  if (kind === 'bar') return drawBarLabel(doc, s, x, y, w, h);
   const pad = h * .07, qs = h - pad * 2, f = h / 38.1, tx = x + pad + qs + pad * .6, tw = x + w - pad - tx;
   drawQR(doc, qrcode, spoolUrl(s), x, y + pad * .4, qs + pad * 1.2);
   const [r, g, b] = hexRgb(s.hex || '#ffffff'); doc.setFillColor(r, g, b); doc.setDrawColor(150); doc.setLineWidth(.2); doc.roundedRect(x + w - pad - 5 * f, y + pad, 5 * f, 5 * f, .8, .8, 'FD');
@@ -2067,14 +2153,14 @@ function drawLabel(doc, qrcode, s, x, y, w, h){
   doc.setFont('courier', 'bold'); doc.setFontSize(7 * f); doc.setTextColor(20); doc.text(spoolCode(s), tx, y + h - pad);
   doc.setFont('helvetica', 'normal'); doc.setFontSize(5.5 * f); doc.setTextColor(120); doc.text(pdfT(settings().company), x + w - pad, y + h - pad, {align:'right'});
 }
-function labelsPdf(jsPDF, qrcode, list, fmt, skip){
+function labelsPdf(jsPDF, qrcode, list, fmt, skip, kind){
   if (fmt === '50x30'){
     const doc = new jsPDF({unit:'mm', format:[50, 30], orientation:'landscape'});
-    list.forEach((s, i) => { if (i) doc.addPage([50, 30], 'landscape'); drawLabel(doc, qrcode, s, 0, 0, 50, 30); });
+    list.forEach((s, i) => { if (i) doc.addPage([50, 30], 'landscape'); drawLabel(doc, qrcode, s, 0, 0, 50, 30, kind); });
     return doc;
   }
   const doc = new jsPDF({unit:'mm', format:'a4'}), W = 63.5, H = 38.1, L = 7.2, T = 15.15, PX = 66.04;
-  list.forEach((s, i) => { const k = i + skip, pos = k % 21; if (k && pos === 0) doc.addPage(); drawLabel(doc, qrcode, s, L + (pos % 3) * PX, T + Math.floor(pos / 3) * H, W, H); });
+  list.forEach((s, i) => { const k = i + skip, pos = k % 21; if (k && pos === 0) doc.addPage(); drawLabel(doc, qrcode, s, L + (pos % 3) * PX, T + Math.floor(pos / 3) * H, W, H, kind); });
   return doc;
 }
 function weighForm(s){
@@ -2354,7 +2440,7 @@ function nextQuoteNumber(){
   return `ORC-${y}-${String((n.length ? Math.max(...n) : 0) + 1).padStart(3, '0')}`;
 }
 function matOptions(){
-  const sp = S.spools.filter(s => spoolRemain(s) > 0).map(s => { const m = spoolLib(s); return ['s:' + s.id, `${spoolLabel(s)}${m ? ` · ${m.name} ${eur(m.eurKg)}/kg` : ''}`]; });
+  const sp = S.spools.filter(s => spoolRemain(s) > 0).map(s => { const m = spoolLib(s); return ['s:' + s.id, `${s.serial ? s.serial + ' · ' : ''}${spoolLabel(s)}${m ? ` · ${m.name} ${eur(m.eurKg)}/kg` : ''}`]; });
   const gen = libMats().map(m => ['m:' + m.id, `${m.name} (sem bobine) · ${eur(m.eurKg)}/kg`]);
   return sp.concat(gen);
 }
@@ -2400,7 +2486,7 @@ function filRow(pre, f, k){
   return `<div class="filrow" data-k="${key}" data-mat="${esc(f.mat || '')}" data-hex="${esc(f.hex || '')}">${swatch(hex)}<span class="fn num">${k + 1}</span>
     ${sel(`${pre}-fm-${key}`, filOpts(pre, f), spool ? (f.spoolId || '') : f.mat)}
     <input id="${pre}-fg-${key}" type="number" min="0" step="0.1" value="${esc(r2(f.grams))}" aria-label="Gramas do filamento ${k + 1}"><span class="u">g</span>
-    <button type="button" class="btn ghost sm" data-act="fil-rm" aria-label="Remover filamento">✕</button></div>`;
+    ${spool ? `<button type="button" class="btn ghost sm scan-btn" data-act="scan-sel" data-sel="${pre}-fm-${key}" aria-label="Ler o código da bobine com a câmara">${SCAN_ICON}</button>` : ''}<button type="button" class="btn ghost sm" data-act="fil-rm" aria-label="Remover filamento">✕</button></div>`;
 }
 function readFils(pre){
   const spool = (FILED[pre] || {}).kind === 'spool';
@@ -2741,6 +2827,13 @@ document.addEventListener('click', async e => {
       case 'edit-spool': spoolForm(find('spools')); break;
       case 'weigh': weighForm(find('spools')); break;
       case 'labels': labelsDlg(b.dataset.id); break;
+      case 'scan-spool': { const t = await scanCode('Ler o código da bobine'); if (!t) break; const sp = spoolFromCode(t); sp ? spoolDlg(sp) : toast(`Não há nenhuma bobine com o código ${t}.`); break; }
+      case 'scan-sel': { const t = await scanCode('Escolher a bobine pelo código'); if (!t) break; const sp = spoolFromCode(t), el = document.getElementById(b.dataset.sel);
+        if (!sp){ toast(`Não há nenhuma bobine com o código ${t}.`); break; }
+        if (!el) break;
+        if (![...el.options].some(o => o.value === sp.id)){ const o = document.createElement('option'); o.value = sp.id; o.textContent = `${sp.serial} · ${spoolLabel(sp)} — ${num(spoolRemain(sp))} g`; el.append(o); }
+        el.value = sp.id; el.dispatchEvent(new Event('input', {bubbles:true})); el.dispatchEvent(new Event('change', {bubbles:true}));
+        toast(`Bobine ${sp.serial} · ${spoolLabel(sp)} (${num(spoolRemain(sp))} g)`); break; }
       case 'olabels': orderLabelsDlg(b.dataset.id); break;
       case 'step-tog': await toggleStep(b.dataset.o, b.dataset.item, b.dataset.step, b.checked); break;
       case 'add-step': { const w = document.createElement('div'); w.innerHTML = stepsEditor.row(b.dataset.px, {name:b.dataset.name || '', min:10}); const r = w.firstElementChild; $('#' + b.dataset.px + '-steps').append(r); if (!b.dataset.name) r.querySelector('input').focus(); onInput && onInput(); break; }

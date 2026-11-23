@@ -19,7 +19,8 @@ const vendor = {
   'supabase.js': 'node_modules/@supabase/supabase-js/dist/umd/supabase.js',
   'jspdf.umd.min.js': 'node_modules/jspdf/dist/jspdf.umd.min.js',
   'jszip.min.js': 'node_modules/jszip/dist/jszip.min.js',
-  'qrcode.js': 'node_modules/qrcode-generator/dist/qrcode.js'
+  'qrcode.js': 'node_modules/qrcode-generator/dist/qrcode.js',
+  'jsbarcode-code128.js': 'node_modules/jsbarcode/dist/barcodes/JsBarcode.code128.min.js'
 };
 for (const [name, src] of Object.entries(vendor)) {
   if (!existsSync(src)) { console.error(`Falta ${src}. Corra "npm install" primeiro.`); process.exit(1); }
