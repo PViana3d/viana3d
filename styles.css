@@ -469,3 +469,9 @@ body.pub-mode{background:var(--bg);background-image:none}
 .scan-man input{flex:1;min-width:0;padding:9px 10px;border:1px solid var(--line);border-radius:6px;background:var(--surface);text-transform:uppercase}
 .scan-dlg #scan-msg{margin:0;font-size:.88rem}
 .filrow:has(.scan-btn){grid-template-columns:auto 22px minmax(0,1fr) 80px auto auto auto}
+
+/* resumo de peças a produzir */
+.pl-sum{border:1px solid var(--line);border-radius:10px;padding:10px 12px;background:var(--sunk);display:flex;flex-direction:column;gap:8px}
+.pl-sum-h{display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap}
+.pl-sum table td{vertical-align:middle}
+.pl-sum td img.thumb{vertical-align:middle;margin-right:6px}

@@ -816,7 +816,7 @@ function vParts(){
       <div class="field"><label for="f-part-client">Cliente</label>${sel('f-part-client', [['', 'Todos'], ['__geral', 'Gerais (sem cliente)']].concat(clientOpts()), st.partClient)}</div></div>
     ${list.length ? `<div class="tbl-wrap"><table><thead><tr><th></th><th>Peça</th><th>Cliente</th><th>Material</th><th class="r">Filamento</th><th class="r">Impressão</th><th class="r">Mão de obra</th><th class="r">Preço</th><th></th></tr></thead><tbody>
       ${list.map(p => isArt(p) ? artListRow(p) : `<tr class="click" data-act="edit-part" data-id="${p.id}" tabindex="0"><td style="width:52px">${thumbImg(p.thumb)}</td><td><b>${esc(p.name)}</b>${p.ref ? `<br><small class="muted mono">${esc(p.ref)}</small>` : ''}</td><td>${esc(clientName(p) || 'Geral')}</td><td>${filsOf(p).length > 1 ? `<span class="sws">${filsOf(p).map(f => swatch(matHex(f.mat) || f.hex)).join('')}</span>` : ''}${esc(filsTypes(p) || '—')}${filsOf(p).length > 1 ? ` <small class="muted">(${filsOf(p).length} filamentos)</small>` : ''}</td><td class="r num">${num(sumG(filsOf(p)), 1)} g</td><td class="r num">${hm(p.hours)}</td><td class="r num">${p.laborH ? num(p.laborH * 60) + ' min' : '—'}</td><td class="r num">${hasFixed(p) ? `<b>${eur(p.price)}</b>` : `${eur(partPrice(p))}<br><small class="warn-txt">calculado · sem preço</small>`}</td>
-        <td class="r" style="white-space:nowrap"><button class="btn ghost sm" data-act="quote-part" data-id="${p.id}">Orçamentar</button><button class="btn ghost sm danger" data-act="del" data-col="parts" data-id="${p.id}">Eliminar</button></td></tr>`).join('')}
+        <td class="r" style="white-space:nowrap"><button class="btn ghost sm" data-act="art-from-part" data-id="${p.id}">Criar artigo</button><button class="btn ghost sm danger" data-act="del" data-col="parts" data-id="${p.id}">Eliminar</button></td></tr>`).join('')}
     </tbody></table></div><p class="muted" style="margin:0;font-size:.82rem">Preço de venda por unidade, sem IVA. No orçamento entra este preço e só o desconto o altera. Peças sem preço definido usam o cálculo pelo custo (margens das Definições).</p>`
     : `<div class="empty">${S.parts.length ? 'Nenhuma peça corresponde à pesquisa.' : 'Ainda não tem peças no catálogo. Crie uma à mão ou importe ficheiros G-code.'}<div class="actions"><button class="btn" data-act="import-parts">Importar G-code</button><button class="btn" data-act="new-part">Nova peça</button></div></div>`}`;
 }
@@ -1084,6 +1084,18 @@ function defaultSpool(mat, need, hex){
 }
 const activePrinters = () => S.printers.filter(p => p.status !== 'parada');
 
+// total de peças individuais a produzir, somando todos os artigos (e peças soltas) da encomenda
+function piecesSummary(units){
+  const g = {};
+  units.forEach(u => { const k = u.partId || u.desc, pp = S.parts.find(x => x.id === u.partId), it = g[k] = g[k] || {name:pp ? pp.name : u.desc, thumb:u.thumb || (pp && pp.thumb) || '', qty:0, grams:0, hours:0, from:{}};
+    const q = u.toPlan ?? u.qty; it.qty += q; it.grams += sumG(filsOf(u)) * q; it.hours += (+u.hours || 0) * q;
+    const art = u.parentId ? (u.desc.split(' · ').slice(1).join(' · ') || 'artigo') : 'peça solta'; it.from[art] = (it.from[art] || 0) + q; });
+  const rows = Object.values(g).sort((a, b) => b.qty - a.qty), tot = rows.reduce((a, r) => a + r.qty, 0);
+  return `<div class="pl-sum"><div class="pl-sum-h"><b>Peças a produzir</b><span class="muted">${tot} peça${tot === 1 ? '' : 's'} · ${rows.length} tipo${rows.length === 1 ? '' : 's'}</span></div>
+    <div class="tbl-wrap"><table><thead><tr><th>Peça</th><th class="r">Quantidade</th><th>Para</th><th class="r">Filamento</th><th class="r">Tempo</th></tr></thead><tbody>
+    ${rows.map(r => `<tr><td>${thumbImg(r.thumb, 28)} <b>${esc(r.name)}</b></td><td class="r num"><b>${r.qty}</b></td><td class="muted">${Object.entries(r.from).map(([k, v]) => `${esc(k)} (${v})`).join(', ')}</td><td class="r num">${num(r.grams, 0)} g</td><td class="r num">${hm(r.hours)}</td></tr>`).join('')}
+    </tbody></table></div></div>`;
+}
 function planOrderDlg(o){
   const stt = orderState(o), items = stt.items.filter(i => i.toPlan > 0);
   if (!items.length){ toast('Esta encomenda já está toda planeada.'); return; }
@@ -1091,6 +1103,7 @@ function planOrderDlg(o){
   const pOpts = [['auto', 'Distribuir pelas impressoras livres']].concat(activePrinters().map(p => [p.id, p.name]));
   openDlg(`Planear ${o.number}`, `
     <p style="margin:0">${esc(clientName(o) || 'Sem cliente')} · prazo <b>${fmtDate(o.due)}</b>. Indique quantas unidades cabem em cada impressão (placa): são criadas as impressões necessárias e colocadas na fila de cada impressora.</p>
+    ${piecesSummary(items)}
     <div class="row">${F('pl-start', 'Começar a partir de', inp('pl-start', localDT(roundUp15(new Date())), 'datetime-local'))}</div>
     <div class="items">${items.map(i => `<div class="plrow" data-id="${i.id}">
       <div class="qi-name">${thumbImg(i.thumb)}<div><b>${esc(i.desc)}</b><small>${i.toPlan} un. por planear · ${filsOf(i).length > 1 ? filsOf(i).length + ' filamentos · ' : ''}${num(sumG(filsOf(i)), 1)} g · ${hm(i.hours)} por unidade</small></div></div>
@@ -2606,7 +2619,7 @@ function partForm(p, opts = {}){
   };
 }
 function artigoForm(p, opts = {}){
-  const isNew = !p, s = settings();
+  const isNew = !p || !!opts.asNew, s = settings();
   p = p ? cp(p) : {id:uid(), kind:'artigo', name:'', ref:'', clientId:opts.clientId || '', comps:[], mats:[], steps:[], costs:[], fixedPrice:null, notes:'', thumb:''};
   const pieces = S.parts.filter(x => !isArt(x)).sort((a, b) => a.name.localeCompare(b.name, 'pt'));
   const compRow = (c = {}) => { const r = c.id || uid(); return `<div class="srow comp-row" data-r="${r}">${F(`ar-cp-${r}`, 'Peça impressa', sel(`ar-cp-${r}`, [['', '— Peça do catálogo —']].concat(pieces.map(x => [x.id, `${x.name}${x.ref ? ' · ' + x.ref : ''} (${num(sumG(filsOf(x)), 1)} g · ${hm(x.hours)})`])), c.partId || ''))}${F(`ar-cq-${r}`, 'Qtd. por artigo', inp(`ar-cq-${r}`, c.qty ?? 1, 'number', 'min="1" step="1"'))}<button type="button" class="btn ghost" data-act="rm-srow" aria-label="Remover peça">✕</button></div>`; };
@@ -2709,9 +2722,11 @@ function quoteForm(q, opts = {}){
     filsOf(n).forEach(f => ensureOpt(f.mat)); snap[id] = n; const row = document.querySelector(`.qitem[data-id="${id}"]`); const w = document.createElement('div'); w.innerHTML = itemRow(n); row.replaceWith(w.firstElementChild); onInput && onInput();
   };
   const partOpts = cid => {
-    const mine = S.parts.filter(p => cid && p.clientId === cid), gen = S.parts.filter(p => !p.clientId), other = S.parts.filter(p => p.clientId && p.clientId !== cid);
+    const arts = S.parts.filter(isArt);
+    if (!arts.length) return '<option value="">Ainda não há artigos — crie-os em Peças → Novo artigo composto</option>';
+    const mine = arts.filter(p => cid && p.clientId === cid), gen = arts.filter(p => !p.clientId), other = arts.filter(p => p.clientId && p.clientId !== cid);
     const o = list => list.sort((a, b) => a.name.localeCompare(b.name, 'pt')).map(p => isArt(p) ? `<option value="${p.id}">${esc(p.name)}${p.ref ? ' · ' + esc(p.ref) : ''} — artigo · ${(p.comps || []).reduce((a, c) => a + (+c.qty || 0), 0)} peças</option>` : `<option value="${p.id}">${esc(p.name)}${p.ref ? ' · ' + esc(p.ref) : ''} — ${filsOf(p).length > 1 ? filsOf(p).length + ' filamentos · ' : ''}${num(sumG(filsOf(p)), 1)} g · ${hm(p.hours)}</option>`).join('');
-    return `<option value="">Escolher peça do catálogo…</option>${mine.length ? `<optgroup label="Deste cliente">${o(mine)}</optgroup>` : ''}${gen.length ? `<optgroup label="Gerais">${o(gen)}</optgroup>` : ''}${other.length ? `<optgroup label="De outros clientes">${o(other)}</optgroup>` : ''}`;
+    return `<option value="">Escolher artigo do catálogo…</option>${mine.length ? `<optgroup label="Deste cliente">${o(mine)}</optgroup>` : ''}${gen.length ? `<optgroup label="Gerais">${o(gen)}</optgroup>` : ''}${other.length ? `<optgroup label="De outros clientes">${o(other)}</optgroup>` : ''}`;
   };
   quoteForm.partOpts = partOpts;
   const read = () => {
@@ -2727,11 +2742,11 @@ function quoteForm(q, opts = {}){
       <div class="row">${F('q-number', 'Número', inp('q-number', q.number))}${F('q-date', 'Data', inp('q-date', q.date, 'date'))}${F('q-validity', 'Validade (dias)', inp('q-validity', q.validity, 'number', 'min="1"'))}${F('q-delivery', 'Prazo de entrega (dias úteis)', inp('q-delivery', q.deliveryDays ?? s.delivery, 'number', 'min="0" step="1"') + '<span class="hint" id="q-delivery-h"></span>')}${F('q-status', 'Estado', sel('q-status', Object.entries(QSTATUS).map(([k, [l]]) => [k, l]), q.status))}</div>
       <div class="row">${F('q-client', 'Cliente', sel('q-client', clientOpts([['', 'Sem cliente']]).concat(q.clientId || !q.client ? [] : [['__legacy', q.client + ' (sem ficha)']]).concat([['__new', '+ Novo cliente…']]), q.clientId || (q.client ? '__legacy' : '')))}${F('q-printer', 'Impressora', sel('q-printer', S.printers.map(p => [p.id, p.name]).concat(S.printers.length ? [] : [['', 'Sem impressora']]), q.printerId))}</div>
       <div class="newclient" id="q-newclient" hidden><div class="row">${F('qc-name', 'Nome do novo cliente', inp('qc-name'))}${F('qc-nif', 'NIF', inp('qc-nif'))}${F('qc-email', 'Email', inp('qc-email', '', 'email'))}${F('qc-phone', 'Telefone', inp('qc-phone', '', 'tel'))}</div><span class="hint muted">O cliente é guardado na base de dados quando gravar o orçamento.</span></div>
-      <h3>Peças</h3>
-      <div class="addpart"><select id="q-addpart" aria-label="Peça do catálogo">${partOpts(q.clientId)}</select><input id="q-addqty" type="number" min="1" step="1" value="1" aria-label="Quantidade" style="width:76px"><button type="button" class="btn" data-act="add-part">Adicionar</button></div>
-      <details class="gimport"><summary>Importar G-code como peça nova</summary>${dropZone(true, 'Cada ficheiro (ou placa) é guardado no catálogo de peças e adicionado a este orçamento.')}</details>
+      <h3>Artigos</h3>
+      <div class="addpart"><select id="q-addpart" aria-label="Artigo do catálogo">${partOpts(q.clientId)}</select><input id="q-addqty" type="number" min="1" step="1" value="1" aria-label="Quantidade" style="width:76px"><button type="button" class="btn" data-act="add-part">Adicionar</button></div>
+      <p class="hint muted" style="margin:0">No orçamento só entram artigos compostos. As peças que os formam aparecem ao planear a produção. Para vender uma peça sozinha, use "Criar artigo" na lista de peças.</p>
       <div class="items" id="q-items">${(q.items || []).map(itemRow).join('')}</div>
-      <div class="empty" id="q-empty" ${(q.items || []).length ? 'hidden' : ''}>Escolha peças do catálogo para montar o orçamento.</div>
+      <div class="empty" id="q-empty" ${(q.items || []).length ? 'hidden' : ''}>Escolha artigos do catálogo para montar o orçamento.</div>
       <div class="row">${F('q-rate', 'Mão de obra (€/hora)', inp('q-rate', q.laborRate, 'number', 'min="0" step="0.5"'))}${F('q-labor', 'Mão de obra adicional (h)', inp('q-labor', q.laborH || 0, 'number', 'min="0" step="0.25"'))}${F('q-extras', 'Extras (€)', inp('q-extras', q.extras, 'number', 'min="0" step="0.01"'))}</div>
       <div class="row">${F('q-failure', 'Margem p/ falhas (%)', inp('q-failure', q.failure, 'number', 'min="0" step="1"'))}${F('q-margin', 'Margem de lucro (%)', inp('q-margin', q.margin, 'number', 'min="0" step="1"'))}</div>
       <p class="hint muted" style="margin:-4px 0 0">As margens só se aplicam às peças sem preço definido e à mão de obra adicional. As peças com preço no catálogo entram com esse preço (só o desconto o altera).</p>
@@ -2851,7 +2866,7 @@ document.addEventListener('click', async e => {
       case 'edit-quote': quoteForm(find('quotes')); break;
       case 'sample': await loadSample(); break;
       case 'add-task': { const r = document.createElement('div'); r.innerHTML = printerForm.taskRow({id:uid(), name:'', interval:100, unit:'h', last:numv('p-hours'), lastDate:today()}); $('#task-rows').append(r.firstElementChild); break; }
-      case 'add-part': { const pid = val('q-addpart'); if (!pid){ toast('Escolha uma peça do catálogo.'); break; } quoteForm.addPart(pid, Math.max(1, Math.round(numv('q-addqty')))); $('#q-addpart').value = ''; $('#q-addqty').value = 1; break; }
+      case 'add-part': { const pid = val('q-addpart'); if (!pid){ toast('Escolha um artigo do catálogo.'); break; } quoteForm.addPart(pid, Math.max(1, Math.round(numv('q-addqty')))); $('#q-addpart').value = ''; $('#q-addqty').value = 1; break; }
       case 'refresh-item': quoteForm.refreshItem(b.closest('.qitem').dataset.id); break;
       case 'convert': await convertQuote(find('quotes')); break;
       case 'quote-link': {
@@ -2912,7 +2927,10 @@ document.addEventListener('click', async e => {
       case 'new-part': partForm(); break;
       case 'edit-part': { const p = find('parts'); isArt(p) ? artigoForm(p) : partForm(p); break; }
       case 'import-parts': importPartsDlg(); break;
-      case 'quote-part': { const p = find('parts'); quoteForm(null, {clientId:p.clientId || '', partIds:[p.id]}); break; }
+      case 'quote-part': { const p = find('parts'); if (!isArt(p)){ toast('No orçamento só entram artigos. Crie um artigo com esta peça.'); break; } quoteForm(null, {clientId:p.clientId || '', partIds:[p.id]}); break; }
+      case 'art-from-part': { const pp = find('parts'); const same = S.parts.filter(a => isArt(a) && (a.comps || []).length === 1 && a.comps[0].partId === pp.id);
+        if (same.length) toast(`Já existe o artigo "${same[0].name}" só com esta peça.`);
+        artigoForm({id:uid(), kind:'artigo', name:pp.name, ref:pp.ref || '', clientId:pp.clientId || '', comps:[{id:uid(), partId:pp.id, qty:1}], mats:[], steps:[], costs:[], fixedPrice:pp.price ?? null, notes:'', img:pp.img || '', thumb:''}, {asNew:true}); break; }
       case 'rm-row': b.closest('.qitem, .item, .task-row').remove(); onInput && onInput(); break;
       case 'rm-srow': b.closest('.srow').remove(); onInput && onInput(); break;
       case 'add-srow': { const w = document.createElement('div'); w.innerHTML = stockEditor.row(b.dataset.px); $('#' + b.dataset.px + '-stock').append(w.firstElementChild); onInput && onInput(); break; }
